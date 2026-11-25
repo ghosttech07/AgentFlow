@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentFlow Dashboard</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #677085; --line: #e2e5eb;
+    --accent: #2f5bea; --ok: #157a41; --bad: #c0392b; --warn: #8f5700; --info: #1f6aa5; --idle: #5f6878;
+    --on-color: #ffffff;
+    --mono: ui-monospace, SFMono-Regular, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #12151b; --panel: #1a1e26; --text: #e4e7ee; --muted: #9aa3b5; --line: #2b313d;
+            --accent: #7c9cff; --ok: #4cc38a; --bad: #f07272; --warn: #e8a849; --info: #62a8e8; --idle: #8b94a8;
+            --on-color: #10141a; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 12px 16px;
+           border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 2; }
+  header h1 { font-size: 17px; margin: 0 12px 0 0; }
+  header .spacer { flex: 1; }
+  input, textarea, select { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line);
+                            border-radius: 6px; padding: 6px 8px; }
+  textarea { width: 100%; font-family: var(--mono); font-size: 12px; }
+  button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--text);
+           border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-color); }
+  button.danger { color: var(--bad); }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  main { display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 16px; padding: 16px; }
+  @media (max-width: 860px) { main { grid-template-columns: minmax(0, 1fr); } .glane { grid-template-columns: 120px 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; min-width: 0;
+           overflow-x: auto; }
+  .panel h2 { font-size: 13px; text-transform: none; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+  .wf { padding: 8px 10px; border-radius: 8px; cursor: pointer; border: 1px solid transparent; }
+  .wf:hover { background: var(--bg); }
+  .wf.sel { border-color: var(--accent); }
+  .wf .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+  .wf .row { flex-wrap: nowrap; }
+  .wf .meta { color: var(--muted); font-size: 12px; }
+  .pill { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px;
+          color: var(--on-color); background: var(--idle); white-space: nowrap; }
+  .s-COMPLETED, .s-SUCCEEDED, .o-succeeded { background: var(--ok); }
+  .s-FAILED, .o-failed, .o-worker_lost { background: var(--bad); }
+  .s-RUNNING, .o-running { background: var(--info); }
+  .s-AWAITING_APPROVAL, .s-PAUSED, .s-RETRYING, .o-interrupted { background: var(--warn); }
+  .s-CANCELLED, .s-SKIPPED, .o-cancelled { background: var(--idle); }
+  .s-PLANNING, .s-READY { background: var(--accent); }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  .muted { color: var(--muted); }
+  .mono { font-family: var(--mono); font-size: 12px; }
+  .bar { height: 8px; background: var(--line); border-radius: 999px; overflow: hidden; }
+  .bar > div { height: 100%; background: var(--ok); }
+  .gantt { position: relative; }
+  .glane { display: grid; grid-template-columns: 170px 1fr; align-items: center; gap: 8px; margin: 4px 0; }
+  .gtrack { position: relative; height: 18px; background: var(--bg); border-radius: 4px; }
+  .gseg { position: absolute; top: 2px; height: 14px; border-radius: 3px; min-width: 3px; }
+  .gkey { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+  .approval { border: 1px solid var(--warn); border-radius: 8px; padding: 12px; }
+  .approval pre { max-height: 160px; overflow: auto; white-space: pre-wrap; word-break: break-word; margin: 6px 0; }
+  .events { max-height: 360px; overflow: auto; }
+  .events td:first-child { white-space: nowrap; width: 70px; }
+  .err { color: var(--bad); }
+  #toast { position: fixed; bottom: 16px; right: 16px; max-width: 420px; padding: 10px 14px; border-radius: 8px;
+           background: var(--text); color: var(--bg); display: none; z-index: 5; }
+  details summary { cursor: pointer; color: var(--muted); }
+  .empty { color: var(--muted); padding: 24px; text-align: center; }
+  .ask { margin: 16px 16px 0; }
+  .ask input { font-size: 15px; padding: 10px 12px; }
+  .ans { margin-top: 12px; display: grid; gap: 10px; }
+  .ans .text { font-size: 15px; line-height: 1.6; white-space: pre-wrap; }
+  .ans sup a, .srcs a { color: var(--accent); text-decoration: none; }
+  .ans sup a:hover, .srcs a:hover { text-decoration: underline; }
+  .srcs { display: grid; gap: 4px; font-size: 13px; }
+  .srcs .uncited { opacity: .65; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chips button { font-size: 12px; padding: 3px 9px; border-radius: 999px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>AgentFlow</h1>
+  <span id="engine" class="muted">engine: ...</span>
+  <span class="spacer"></span>
+  <label class="row muted">You <input id="actor" size="12" placeholder="admin"></label>
+  <label class="row muted">X-API-Key <input id="apikey" type="password" size="14" placeholder="(dev: none)"></label>
+</header>
+
+<section class="ask panel" aria-labelledby="ask-h">
+  <h2 id="ask-h">Quick Ask: live web answer with sources</h2>
+  <form id="askform" class="row" style="flex-wrap:nowrap">
+    <input id="question" style="flex:1;min-width:0" maxlength="1000"
+           placeholder="e.g. How many electric cars were sold in India last month?">
+    <button class="primary" id="askbtn" type="submit">Ask</button>
+  </form>
+  <div id="answer" aria-live="polite"></div>
+</section>
+
+<main>
+  <section class="grid" style="align-content:start">
+    <div class="panel">
+      <h2>New workflow</h2>
+      <textarea id="goal" rows="3" placeholder="e.g. Write a short beginner guide on EV adoption in India and publish it"></textarea>
+      <div class="row" style="margin-top:8px"><button class="primary" id="create">Plan &amp; run</button></div>
+    </div>
+    <div class="panel">
+      <h2>Workflows</h2>
+      <div id="list"><div class="empty">Loading...</div></div>
+    </div>
+  </section>
+  <section id="detail" class="grid" style="align-content:start">
+    <div class="panel empty">Select a workflow</div>
+  </section>
+</main>
+<div id="toast"></div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const pill = (s, prefix = "s") => `<span class="pill ${prefix}-${esc(s)}">${esc(s)}</span>`;
+const store = { get(k) { try { return localStorage.getItem(k) || ""; } catch { return ""; } },
+                set(k, v) { try { localStorage.setItem(k, v); } catch {} } };
+let selected = location.hash.slice(1) || store.get("af.selected") || null;  // #<id> links to a workflow
+let busy = false;
+
+for (const id of ["apikey", "actor"]) {
+  $(id).value = store.get("af." + id);
+  $(id).addEventListener("change", () => store.set("af." + id, $(id).value));
+}
+
+function toast(msg, isError = false) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.style.background = isError ? "var(--bad)" : "";
+  t.style.display = "block";
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => (t.style.display = "none"), 4000);
+}
+
+async function api(method, path, body) {
+  const headers = { "Content-Type": "application/json" };
+  if ($("apikey").value) headers["X-API-Key"] = $("apikey").value;
+  const resp = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+  const data = resp.status === 204 ? null : await resp.json().catch(() => null);
+  if (!resp.ok) throw new Error((data && data.error && data.error.message) || `${resp.status} ${resp.statusText}`);
+  return data;
+}
+
+const actor = () => $("actor").value.trim() || "admin";
+
+async function act(fn, okMsg) {
+  if (busy) return;
+  busy = true;
+  try { await fn(); toast(okMsg); await refresh(); }
+  catch (e) { toast(e.message, true); }
+  finally { busy = false; }
+}
+
+$("create").onclick = () => act(async () => {
+  const goal = $("goal").value.trim();
+  if (!goal) throw new Error("Enter a goal first");
+  const wf = await api("POST", "/workflows", { name: goal.slice(0, 80), goal, run: true });
+  selected = wf.id; store.set("af.selected", selected); $("goal").value = "";
+}, "Workflow accepted; planning...");
+
+async function loadList() {
+  const data = await api("GET", "/workflows?limit=30");
+  $("list").innerHTML = data.items.length ? data.items.map((w) => `
+    <div class="wf ${w.id === selected ? "sel" : ""}" data-id="${esc(w.id)}">
+      <div class="row" style="justify-content:space-between"><span class="name">${esc(w.name)}</span>${pill(w.status)}</div>
+      <div class="meta">${esc(new Date(w.created_at).toLocaleString())}</div>
+    </div>`).join("") : `<div class="empty">No workflows yet</div>`;
+  for (const el of $("list").querySelectorAll(".wf")) {
+    el.onclick = () => {
+      selected = el.dataset.id; store.set("af.selected", selected);
+      history.replaceState(null, "", "#" + selected); refresh();
+    };
+  }
+}
+
+function controls(wf) {
+  const c = wf.controls;
+  return `<div class="row">
+    <button data-a="pause" ${c.can_pause ? "" : "disabled"}>Pause</button>
+    <button data-a="pause-now" ${c.can_pause ? "" : "disabled"} title="Interrupt running tasks">Pause now</button>
+    <button data-a="resume" ${c.can_resume ? "" : "disabled"}>Resume</button>
+    <button data-a="retry" ${c.can_retry ? "" : "disabled"}>Retry failed</button>
+    <button data-a="cancel" class="danger" ${c.can_cancel ? "" : "disabled"}>Cancel</button>
+  </div>`;
+}
+
+function gantt(tl) {
+  const ends = tl.spans.flatMap((s) => s.attempts.map((a) => a.end_offset_s ?? a.start_offset_s));
+  const total = Math.max(1, ...ends, ...tl.entries.map((e) => e.offset_s || 0));
+  const lanes = tl.spans.map((s) => `
+    <div class="glane"><div class="gkey" title="${esc(s.task_key)} (${esc(s.status)})">${esc(s.task_key)}</div>
+      <div class="gtrack">${s.attempts.map((a) => {
+        const end = a.end_offset_s ?? total;
+        const left = (a.start_offset_s / total) * 100, width = ((end - a.start_offset_s) / total) * 100;
+        return `<div class="gseg o-${esc(a.outcome)}" style="left:${left}%;width:${width}%"
+                 title="#${a.attempt_number} ${esc(a.outcome)}${a.error_type ? " (" + esc(a.error_type) + ")" : ""} on ${esc(a.worker_id)}"></div>`;
+      }).join("")}</div></div>`).join("");
+  return `<div class="gantt">${lanes || '<div class="muted">No attempts yet</div>'}</div>
+          <div class="muted" style="margin-top:6px;font-size:12px">0s → ${total.toFixed(1)}s since creation ·
+          green succeeded · red failed / worker lost · amber interrupted · blue running</div>`;
+}
+
+function approvals(list) {
+  return list.map((a) => {
+    const p = a.request_payload;
+    return `<div class="approval" data-approval="${esc(a.id)}">
+      <div class="row" style="justify-content:space-between"><strong>${esc(p.task_name)} (${esc(p.agent_type)})</strong>
+        <span class="muted">expires ${a.expires_at ? esc(new Date(a.expires_at).toLocaleString()) : "never"}</span></div>
+      <div class="muted">${esc(p.why_sensitive)}</div>
+      <div>${esc(p.task_description)}</div>
+      <details><summary>Task input and upstream outputs</summary>
+        <pre class="mono">${esc(JSON.stringify(p.task_input, null, 2))}</pre>
+        ${Object.entries(p.dependency_previews || {}).map(([k, v]) => `<div><strong>${esc(k)}</strong><pre class="mono">${esc(v)}</pre></div>`).join("")}
+      </details>
+      <input class="comment" placeholder="Comment / reason" style="width:100%;margin:8px 0">
+      <textarea class="overrides" rows="2" placeholder='Optional input overrides (JSON), e.g. {"title": "Final title"}'></textarea>
+      <div class="row" style="margin-top:8px">
+        <button class="primary" data-d="approve">Approve</button>
+        <button data-d="skip_task">Reject: skip step</button>
+        <button class="danger" data-d="fail_workflow">Reject: fail workflow</button>
+      </div></div>`;
+  }).join("");
+}
+
+async function loadDetail() {
+  if (!selected) return;
+  let wf, tl, pend;
+  try {
+    [wf, tl, pend] = await Promise.all([api("GET", `/workflows/${selected}`), api("GET", `/workflows/${selected}/timeline`),
+      api("GET", `/approvals?status=pending&workflow_id=${selected}`)]);
+  } catch (e) { $("detail").innerHTML = `<div class="panel err">${esc(e.message)}</div>`; return; }
+  const p = wf.progress, done = p.succeeded + p.skipped;
+  const s = tl.summary;
+  // Keep what the user is typing in an approval card across refreshes.
+  const typing = document.activeElement && document.activeElement.closest(".approval");
+  const approvalsHtml = pend.length ? `<div class="panel"><h2>Waiting for your approval</h2><div class="grid">${approvals(pend)}</div></div>` : "";
+  const html = `
+    <div class="panel">
+      <div class="row" style="justify-content:space-between;align-items:flex-start">
+        <div style="min-width:0"><div class="row">${pill(wf.status)} <strong>${esc(wf.name)}</strong></div>
+          <div class="muted" style="margin-top:4px">${esc(wf.goal)}</div></div>
+        ${controls(wf)}
+      </div>
+      <div style="margin:12px 0 4px" class="bar"><div style="width:${p.total ? (done / p.total) * 100 : 0}%"></div></div>
+      <div class="muted">${done}/${p.total} done · ${p.running} running · ${p.retrying} retrying ·
+        ${p.awaiting_approval} awaiting approval · ${p.failed} failed${wf.duration_seconds != null ? " · " + wf.duration_seconds + "s" : ""}
+        · attempts ${s.attempts} · retries ${s.retries_scheduled} · restarts recovered ${s.restarts_recovered}
+        · tokens ${s.input_tokens}/${s.output_tokens}</div>
+      ${wf.error ? `<div class="err" style="margin-top:6px">${esc(wf.error)}</div>` : ""}
+    </div>
+    <div id="approvals-slot">${approvalsHtml}</div>
+    <div class="panel"><h2>Execution (attempts per task)</h2>${gantt(tl)}</div>
+    <div class="panel"><h2>Tasks</h2><table><tr><th>Task</th><th>Agent</th><th>Status</th><th>Attempts</th><th>Depends on</th></tr>
+      ${wf.tasks.map((t) => `<tr><td>${esc(t.key)}${t.requires_approval ? " 🔒" : ""}</td><td>${esc(t.agent_type)}</td>
+        <td>${pill(t.status)}${t.error ? `<div class="err mono">${esc(t.error_type)}: ${esc(t.error.slice(0, 160))}</div>` : ""}</td>
+        <td>${t.attempt_count}/${t.max_attempts}</td><td class="muted">${esc(t.depends_on.join(", ") || "-")}</td></tr>`).join("")}
+    </table></div>
+    <div class="panel"><h2>Timeline</h2><div class="events"><table>
+      ${tl.entries.slice().reverse().map((e) => `<tr><td class="mono muted">+${e.offset_s.toFixed(1)}s</td><td>${esc(e.text)}</td></tr>`).join("")}
+    </table></div></div>
+    ${wf.result ? `<div class="panel"><h2>Result</h2><details><summary>JSON</summary><pre class="mono">${esc(JSON.stringify(wf.result, null, 2))}</pre></details></div>` : ""}`;
+  if (typing) {  // re-render everything except the approval being edited
+    const keep = $("approvals-slot");
+    $("detail").innerHTML = html;
+    $("approvals-slot").replaceWith(keep);
+  } else {
+    $("detail").innerHTML = html;
+  }
+  wire(wf);
+}
+
+function wire(wf) {
+  const id = wf.id;
+  const routes = {
+    "pause": () => api("POST", `/workflows/${id}/pause`, { actor: actor(), mode: "graceful" }),
+    "pause-now": () => api("POST", `/workflows/${id}/pause`, { actor: actor(), mode: "immediate" }),
+    "resume": () => api("POST", `/workflows/${id}/resume`, { actor: actor() }),
+    "retry": () => api("POST", `/workflows/${id}/retry`),
+    "cancel": () => {
+      const reason = prompt("Cancel this workflow? Reason:");
+      if (reason === null) throw new Error("Cancel aborted");
+      return api("POST", `/workflows/${id}/cancel`, { actor: actor(), reason: reason || null });
+    },
+  };
+  for (const b of document.querySelectorAll("#detail [data-a]")) {
+    b.onclick = () => act(routes[b.dataset.a], `${b.textContent} done`);
+  }
+  for (const card of document.querySelectorAll("#detail .approval")) {
+    for (const b of card.querySelectorAll("[data-d]")) {
+      b.onclick = () => act(async () => {
+        const comment = card.querySelector(".comment").value.trim();
+        const aid = card.dataset.approval;
+        if (b.dataset.d === "approve") {
+          const raw = card.querySelector(".overrides").value.trim();
+          let overrides = null;
+          if (raw) { try { overrides = JSON.parse(raw); } catch { throw new Error("Overrides must be valid JSON"); } }
+          return api("POST", `/approvals/${aid}/approve`, { actor: actor(), comment: comment || null, input_overrides: overrides });
+        }
+        if (!comment) throw new Error("A reason is required to reject");
+        return api("POST", `/approvals/${aid}/reject`, { actor: actor(), reason: comment, on_reject: b.dataset.d });
+      }, `${b.textContent} recorded`);
+    }
+  }
+}
+
+// Quick Ask: [n] / [1, 4] citations become links to the numbered sources.
+function cite(text, sources) {
+  const byN = Object.fromEntries(sources.map((s) => [s.n, s]));
+  return esc(text).replace(/\[(\d{1,2}(?:\s*[,;]\s*\d{1,2})*)\]/g, (m, group) =>
+    "<sup>" + group.split(/[,;]/).map((n) => {
+      const s = byN[Number(n)];
+      return s ? `<a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer" title="${esc(s.title)}">[${Number(n)}]</a>` : `[${esc(n.trim())}]`;
+    }).join("") + "</sup>");
+}
+
+function renderAnswer(r) {
+  const t = r.timings_ms;
+  $("answer").innerHTML = `<div class="ans">
+    <div class="text">${cite(r.answer, r.sources)}</div>
+    ${r.key_points.length ? `<ul style="margin:0;padding-left:20px">${r.key_points.map((k) => `<li>${cite(k, r.sources)}</li>`).join("")}</ul>` : ""}
+    <div class="muted" style="font-size:12px">confidence ${esc(r.confidence)} · ${(t.total / 1000).toFixed(1)}s
+      (search ${(t.search / 1000).toFixed(1)}s, reading ${(t.read_pages / 1000).toFixed(1)}s, model ${(t.model / 1000).toFixed(1)}s)
+      · ${esc(r.model)} · ${esc(r.search_provider)}</div>
+    ${r.warnings.length ? `<div class="err" style="font-size:13px">${r.warnings.map(esc).join("<br>")}</div>` : ""}
+    ${r.sources.length ? `<details ${r.sources.length ? "open" : ""}><summary>Sources (${r.sources.length})</summary><div class="srcs" style="margin-top:6px">
+      ${r.sources.map((s) => `<div class="${s.cited ? "" : "uncited"}">[${s.n}] <a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.title)}</a>
+        <span class="muted">${esc(s.domain)}${s.cited ? "" : " · not cited"}</span></div>`).join("")}
+    </div></details>` : ""}
+    ${r.follow_up_questions.length ? `<div class="chips">${r.follow_up_questions.map((q) => `<button type="button" data-q="${esc(q)}">${esc(q)}</button>`).join("")}</div>` : ""}
+  </div>`;
+  for (const b of $("answer").querySelectorAll("[data-q]")) {
+    b.onclick = () => { $("question").value = b.dataset.q; $("askform").requestSubmit(); };
+  }
+}
+
+$("askform").onsubmit = async (ev) => {
+  ev.preventDefault();
+  const question = $("question").value.trim();
+  if (question.length < 3) return toast("Type a question first", true);
+  $("askbtn").disabled = true;
+  $("answer").innerHTML = `<div class="muted" style="margin-top:10px">Searching the web and reading sources...</div>`;
+  try { renderAnswer(await api("POST", "/ask", { question })); }
+  catch (e) { $("answer").innerHTML = `<div class="err" style="margin-top:10px">${esc(e.message)}</div>`; }
+  finally { $("askbtn").disabled = false; }
+};
+
+async function loadEngine() {
+  try {
+    const e = await api("GET", "/engine/status");
+    $("engine").textContent = e.enabled
+      ? `engine ${e.running ? "running" : "stopped"} · ${e.llm_provider} · ${e.in_flight_task_ids.length}/${e.max_concurrency} busy`
+      : "engine disabled";
+  } catch { $("engine").textContent = "engine: unreachable"; }
+}
+
+async function refresh() {
+  try { await Promise.all([loadList(), loadDetail(), loadEngine()]); }
+  catch (e) { $("list").innerHTML = `<div class="empty err">${esc(e.message)}</div>`; }
+}
+
+refresh();
+setInterval(() => { if (!busy) refresh(); }, 2000);
+</script>
+</body>
+</html>

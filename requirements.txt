@@ -1,0 +1,27 @@
+# AgentFlow - pinned to major versions (compatible upgrades only).
+
+# --- Web ---
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30,<1.0
+
+# --- Database ---
+sqlalchemy[asyncio]>=2.0.30,<2.1
+asyncpg>=0.29,<1.0
+alembic>=1.13,<2.0
+
+# --- LLM (official Google Gen AI SDK; NOT the deprecated google-generativeai) ---
+google-genai>=1.75,<2.0
+
+# --- Live web research (free: metasearch without an API key + main-text extraction) ---
+ddgs>=9.16,<10.0
+trafilatura>=2.0,<3.0
+
+# --- Config / schemas ---
+pydantic>=2.7,<3.0
+pydantic-settings>=2.3,<3.0
+python-dotenv>=1.0,<2.0
+
+# --- Tests ---
+pytest>=8.2,<9.0
+pytest-asyncio>=1.0,<2.0
+httpx>=0.27,<1.0
