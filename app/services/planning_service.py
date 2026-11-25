@@ -22,6 +22,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.llm.context import CallContext, use_context
 from app.agents import AgentInput, create_agent
 from app.agents.planner import Plan
 from app.agents.registry import task_agent_types
@@ -157,7 +158,8 @@ async def complete_planning(
     """Second half of planning for a workflow already in PLANNING: LLM + validation + persist."""
     workflow_id = workflow.id  # still readable after a rollback expires `workflow`
     try:
-        result = await plan(llm, workflow.goal, constraints, workflow.context)
+        with use_context(CallContext(workflow_id)):  # planner calls count toward the workflow budget
+            result = await plan(llm, workflow.goal, constraints, workflow.context)
     except Exception as exc:
         if await _still_planning(session, workflow):
             await _fail_planning(session, workflow, exc)

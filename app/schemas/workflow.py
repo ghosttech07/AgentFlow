@@ -17,6 +17,25 @@ from app.schemas.plan import PlanConstraints
 from app.schemas.task import TaskCreate, TaskRead
 
 
+class Budget(BaseModel):
+    """Per-workflow limits (Part 8). Omitted = config default; explicit null = unlimited."""
+
+    model_config = ConfigDict(extra="forbid")
+    max_cost_usd: float | None = Field(default=None, ge=0)
+    max_tokens: int | None = Field(default=None, ge=1)
+    max_llm_calls: int | None = Field(default=None, ge=1)
+    max_duration_seconds: float | None = Field(default=None, gt=0)
+
+    def stored(self) -> dict[str, Any]:
+        return self.model_dump(exclude_unset=True)
+
+
+class BudgetUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    actor: str = Field(default="admin", min_length=1, max_length=255)
+    budget: Budget
+
+
 class WorkflowCreate(BaseModel):
     """Request body for POST /workflows.
 
@@ -44,6 +63,7 @@ class WorkflowCreate(BaseModel):
         default=False,
         description="If true, return 202 at once; the engine plans (if no tasks) and runs it.",
     )
+    budget: Budget | None = Field(default=None, description="Cost/token/call/duration limits (Part 8).")
 
 
 class WorkflowRead(BaseModel):
@@ -59,6 +79,7 @@ class WorkflowRead(BaseModel):
     result: dict[str, Any] | None
     error: str | None
     run_requested: bool
+    budget: dict[str, Any] | None = None
     created_at: datetime
     updated_at: datetime
     started_at: datetime | None
@@ -96,6 +117,9 @@ class WorkflowDetail(WorkflowRead):
     """Workflow with its tasks, their dependencies, progress counts and duration."""
 
     progress: WorkflowProgress
+    effective_budget: dict[str, Any] = Field(default_factory=dict, description="Budget with config defaults.")
+    usage: dict[str, Any] | None = Field(default=None, description="LLM calls, tokens, cost, duration so far.")
+    remaining: dict[str, Any] | None = Field(default=None, description="Left before each limit (null = unlimited).")
     pending_approvals: PendingApprovals
     controls: Controls
     duration_seconds: float | None = Field(description="Since started_at; until completed_at if finished.")
@@ -117,6 +141,7 @@ class WorkflowDetail(WorkflowRead):
             duration_seconds=duration,
             pending_approvals=PendingApprovals(count=len(pending), ids=[a.id for a in pending]),
             controls=Controls(**allowed_controls(workflow.status)),
+            effective_budget=_effective_budget(workflow.budget),
             tasks=[TaskRead.from_model(t) for t in workflow.tasks],
         )
 
@@ -126,3 +151,10 @@ class WorkflowList(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+def _effective_budget(budget: dict[str, Any] | None) -> dict[str, Any]:
+    from app.config import get_settings
+    from app.services.budget_service import effective_budget
+
+    return effective_budget(budget, get_settings())

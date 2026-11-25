@@ -97,7 +97,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.warning("=" * 72)
     app.state.engine = None
     if settings.engine_enabled:
-        app.state.engine = Engine(SessionLocal, get_llm_client(), settings)
+        llm = get_llm_client()
+        if hasattr(llm, "ensure_started"):  # validate models.yaml + build providers before serving
+            await llm.ensure_started()
+        app.state.engine = Engine(SessionLocal, llm, settings)
         await app.state.engine.start()
     yield
     if app.state.engine is not None:

@@ -50,6 +50,7 @@ class GeminiClient:
         use_search: bool = False,
         thinking_level: str | None = None,
         model: str | None = None,
+        role: str | None = None,
     ) -> LLMResponse:
         """Try each healthy model in [model or GEMINI_MODEL, *the rest of the chain].
 

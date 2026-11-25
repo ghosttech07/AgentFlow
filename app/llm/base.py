@@ -39,10 +39,12 @@ class LLMClient(Protocol):
         use_search: bool = False,
         thinking_level: str | None = None,
         model: str | None = None,
+        role: str | None = None,
     ) -> LLMResponse:
         """Return output validated against `output_model`, or raise an app.llm.errors.LLMError.
 
         thinking_level: "minimal" | "low" | "medium" | "high"; clients may ignore it.
         model: preferred model for this call (e.g. a fast worker model); None = the client default.
+        role: the agent role (planner, researcher, ..., ask); the Part 8 router picks its route from it.
         """
         ...
