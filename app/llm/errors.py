@@ -55,6 +55,13 @@ class LLMOverloadedError(LLMTransientError):
     error_type = "overloaded"
 
 
+class LLMTimeoutError(LLMTransientError):
+    """The provider did not answer within the call timeout (falls back to the next route entry)."""
+
+    code = "llm_timeout"
+    error_type = "timeout"
+
+
 class LLMQuotaExhaustedError(LLMError):
     status_code = 429
     code = "llm_quota_exhausted"
@@ -66,8 +73,22 @@ class LLMPermanentError(LLMError):
     error_type = "permanent"
 
 
+class LLMAuthError(LLMPermanentError):
+    """Bad / missing / unauthorised key: a misconfiguration, never routed around silently."""
+
+    code = "llm_auth"
+
+
 class LLMModelNotFoundError(LLMPermanentError):
     code = "llm_model_not_found"
+
+
+class BudgetPause(Exception):  # noqa: N818 - a control signal, not an error
+    """Raised by the router when a call would breach the workflow budget (the workflow is paused)."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 class LLMOutputError(LLMError):
@@ -91,7 +112,7 @@ def classify_exception(exc: BaseException) -> LLMError:
     if isinstance(exc, LLMError):
         return exc
     if isinstance(exc, TimeoutError):  # asyncio.TimeoutError is TimeoutError on 3.11+
-        return LLMTransientError("Gemini request timed out")
+        return LLMTimeoutError("Gemini request timed out")
     if isinstance(exc, genai_errors.APIError):
         return _classify_api_error(exc)
     if isinstance(exc, NETWORK_ERRORS):
@@ -117,6 +138,8 @@ def _classify_api_error(exc: genai_errors.APIError) -> LLMError:
         return LLMOverloadedError(message, **kwargs)
     if code == 404:
         return LLMModelNotFoundError(message, **kwargs)
+    if code in (401, 403) or (code == 400 and "api key" in raw.lower()):
+        return LLMAuthError(message, **kwargs)
     if code in TRANSIENT_HTTP_CODES or code >= 500:
         return LLMTransientError(message, **kwargs)
     return LLMPermanentError(message, **kwargs)

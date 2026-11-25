@@ -9,6 +9,7 @@ import pytest
 from google.genai import errors as genai_errors
 
 from app.llm.errors import (
+    LLMAuthError,
     LLMModelNotFoundError,
     LLMOverloadedError,
     LLMPermanentError,
@@ -79,7 +80,7 @@ def api_error(payload: dict, response: httpx.Response | None = None) -> genai_er
         (GROUNDING_QUOTA, LLMQuotaExhaustedError, "quota_exhausted", False, None),
         (ZERO_LIMIT, LLMQuotaExhaustedError, "quota_exhausted", False, 23.4),
         (MODEL_NOT_FOUND, LLMModelNotFoundError, "permanent", False, None),
-        (BAD_KEY, LLMPermanentError, "permanent", False, None),
+        (BAD_KEY, LLMAuthError, "permanent", False, None),  # Part 8: auth is its own subclass
     ],
     ids=["overloaded-503", "rate-limit-per-minute", "daily-quota", "grounding-quota",
          "zero-limit", "model-not-found", "bad-request"],

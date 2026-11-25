@@ -24,6 +24,10 @@ class LLMResponse:
     output_tokens: int = 0
     latency_ms: int = 0
     sources: list[Source] = field(default_factory=list)
+    provider: str = "gemini"
+    cost_usd: float | None = None  # None = price unknown (never guessed)
+    fallback_from: str | None = None  # "provider:model" of the first route entry when a fallback answered
+    route_position: int = 0  # index of the answering entry in the role's route
 
 
 class LLMClient(Protocol):
