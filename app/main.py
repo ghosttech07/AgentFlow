@@ -14,6 +14,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app import __version__
@@ -29,7 +30,7 @@ from app.api import (
     routes_providers,
     routes_workflows,
 )
-from app.config import get_settings
+from app.config import PROJECT_ROOT, get_settings
 from app.core.errors import AppError
 from app.core.logging import setup_logging
 from app.db.session import SessionLocal, engine
@@ -131,6 +132,8 @@ def create_app() -> FastAPI:
     app.include_router(routes_approvals.router)
     app.include_router(routes_dashboard.router)
     app.include_router(routes_dev.router)
+    # Dashboard assets (self-hosted fonts); the page itself is GET /dashboard.
+    app.mount("/static", StaticFiles(directory=PROJECT_ROOT / "app" / "static"), name="static")
     return app
 
 
