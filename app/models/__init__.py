@@ -4,6 +4,7 @@ from app.models.approval import Approval, Publication
 from app.models.attempt import ChaosRule, TaskAttempt
 from app.models.event import WorkflowEvent
 from app.models.task import Task, task_dependencies
+from app.models.usage import LLMCall, ProviderUsage
 from app.models.workflow import Workflow
 
-__all__ = ["Approval", "ChaosRule", "Publication", "Task", "TaskAttempt", "Workflow", "WorkflowEvent", "task_dependencies"]
+__all__ = ["Approval", "ChaosRule", "LLMCall", "ProviderUsage", "Publication", "Task", "TaskAttempt", "Workflow", "WorkflowEvent", "task_dependencies"]

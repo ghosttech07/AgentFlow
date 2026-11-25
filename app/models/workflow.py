@@ -38,6 +38,8 @@ class Workflow(Base):
     error: Mapped[str | None] = mapped_column(Text)
     # Set by POST /workflows run=true; the engine plans (if needed) and starts it, then clears it.
     run_requested: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
+    # Part 8: {max_cost_usd?, max_tokens?, max_llm_calls?, max_duration_seconds?}; None = config defaults.
+    budget: Mapped[dict[str, Any] | None] = mapped_column()
 
     created_at: Mapped[datetime] = mapped_column(
         default=utcnow, server_default=func.now(), index=True
