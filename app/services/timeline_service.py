@@ -16,11 +16,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.attempt import TaskAttempt
 from app.models.event import WorkflowEvent
+from app.models.usage import LLMCall
 from app.services.workflow_service import get_workflow
 
 
 def _offset(at: datetime | None, origin: datetime) -> float | None:
     return None if at is None else round((at - origin).total_seconds(), 2)
+
+
+def _via(p: dict[str, Any]) -> str:
+    return f"{p['provider']}:{p.get('model')}" if p.get("provider") else str(p.get("model"))
+
+
+def _fallback(p: dict[str, Any]) -> str:
+    return f", fallback from {p['fallback_from']}" if p.get("fallback_from") else ""
 
 
 def describe(event_type: str, p: dict[str, Any]) -> str:
@@ -48,7 +57,8 @@ def describe(event_type: str, p: dict[str, Any]) -> str:
         "task.created": f"Task {key} created ({p.get('agent_type')})",
         "task.ready": f"{key} ready" + (f" (retry, attempt {p.get('next_attempt')})" if p.get("retry") else ""),
         "task.started": f"{key} started (attempt {p.get('attempt_number', p.get('attempt'))}) on {p.get('worker_id')}",
-        "task.succeeded": f"{key} succeeded (attempt {p.get('attempt')}, {p.get('latency_ms')} ms, {p.get('model')})",
+        "task.succeeded": f"{key} succeeded (attempt {p.get('attempt')}, {p.get('latency_ms')} ms, "
+                          f"via {_via(p)}{_fallback(p)})",
         "task.failed": f"{key} failed: {p.get('error_type')} ({p.get('reason', '')})",
         "task.retry_scheduled": f"{key} attempt {p.get('attempt')} failed ({p.get('error_type')}); "
                                 f"retry in {p.get('delay')}s",
@@ -61,6 +71,11 @@ def describe(event_type: str, p: dict[str, Any]) -> str:
                              + (f", input changed: {sorted(p['input_changes'])}" if p.get("input_changes") else ""),
         "approval.rejected": f"{key} rejected{who} ({p.get('on_reject')}){why}",
         "approval.expired": f"Approval for {key} expired",
+        "workflow.budget_exceeded": f"Budget reached: {p.get('limit')}"
+                                    + (" (estimated, before the call)" if p.get("estimated") else "")
+                                    + f"; {(p.get('usage') or {}).get('llm_calls')} LLM calls, "
+                                      f"${(p.get('usage') or {}).get('cost_usd', 0):.4f}: paused for a human",
+        "workflow.budget_updated": f"Budget updated{who}: {p.get('to')}",
     }
     if event_type in texts:
         return texts[event_type]
@@ -86,9 +101,11 @@ async def get_timeline(session: AsyncSession, workflow_id: uuid.UUID) -> dict[st
         {
             "task_key": t.key, "agent_type": t.agent_type, "status": t.status,
             "depends_on": [d.key for d in t.dependencies],
+            "fallback_from": (t.metrics or {}).get("fallback_from"),
+            "cost_usd": (t.metrics or {}).get("cost_usd"),
             "attempts": [
                 {"attempt_number": a.attempt_number, "outcome": a.outcome, "worker_id": a.worker_id,
-                 "error_type": a.error_type, "model": a.model,
+                 "error_type": a.error_type, "model": a.model, "provider": a.provider, "cost_usd": a.cost_usd,
                  "start_offset_s": _offset(a.started_at, origin), "end_offset_s": _offset(a.finished_at, origin),
                  "duration_s": round((a.finished_at - a.started_at).total_seconds(), 2) if a.finished_at else None}
                 for a in by_task.get(t.id, [])
@@ -96,6 +113,13 @@ async def get_timeline(session: AsyncSession, workflow_id: uuid.UUID) -> dict[st
         }
         for t in wf.tasks
     ]
+    calls = (await session.scalars(select(LLMCall).where(LLMCall.workflow_id == workflow_id))).all()
+    cost_by_provider: dict[str, float | None] = {}
+    for c in calls:  # failed calls cost nothing; one unpriced success makes that provider's total unknown
+        current = cost_by_provider.setdefault(c.provider, 0.0)
+        if c.outcome == "succeeded":
+            cost_by_provider[c.provider] = None if current is None or c.cost_usd is None else round(
+                current + c.cost_usd, 6)
     outcomes = Counter(a.outcome for a in attempts)
     types = Counter(e.event_type for e in events)
     summary = {
@@ -108,6 +132,10 @@ async def get_timeline(session: AsyncSession, workflow_id: uuid.UUID) -> dict[st
         "input_tokens": sum(a.input_tokens or 0 for a in attempts),
         "output_tokens": sum(a.output_tokens or 0 for a in attempts),
         "models": sorted({a.model for a in attempts if a.model}),
+        "llm_calls": len(calls),
+        "fallbacks": sum(1 for c in calls if c.outcome == "succeeded" and c.fallback_from),
+        "cost_by_provider": cost_by_provider,
+        "cost_usd": round(sum(c.cost_usd or 0 for c in calls), 6),
     }
     end = wf.completed_at
     return {

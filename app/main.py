@@ -26,6 +26,7 @@ from app.api import (
     routes_engine,
     routes_health,
     routes_plans,
+    routes_providers,
     routes_workflows,
 )
 from app.config import get_settings
@@ -126,6 +127,7 @@ def create_app() -> FastAPI:
     app.include_router(routes_plans.router)
     app.include_router(routes_engine.router)
     app.include_router(routes_ask.router)
+    app.include_router(routes_providers.router)
     app.include_router(routes_approvals.router)
     app.include_router(routes_dashboard.router)
     app.include_router(routes_dev.router)
