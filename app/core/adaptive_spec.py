@@ -34,3 +34,5 @@ class MemorySwitch(BaseModel):
     model_config = ConfigDict(extra="forbid")
     read: bool = True
     write: bool = True
+    namespace: str = Field(default="default", min_length=1, max_length=64,
+                           description="Memory space (Part 11 maps it to the team).")

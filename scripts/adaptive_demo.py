@@ -113,6 +113,7 @@ def main() -> int:
                        "ENGINE_SINGLE_NODE": "true", "FAKE_LLM_DELAY_SECONDS": "0.2", "CHAOS_CRASH_DELAY_SECONDS": "0",
                        "PUBLISH_DIR": str(ROOT / "outputs" / "published_adaptive_demo")})
     base = f"http://127.0.0.1:{args.port}"
+    memory = {"namespace": f"adaptive-demo-{int(time.time())}"}  # each demo run starts with an empty memory
     headers = {"X-API-Key": API_KEY}
     results: list[tuple[str, bool]] = []
 
@@ -120,7 +121,7 @@ def main() -> int:
     proc, log = start_server(args.port, not args.live, "adaptive_demo_1")
     try:
         with httpx.Client(base_url=base, timeout=30, headers=headers) as c:
-            wf1 = c.post("/workflows", json={"name": "EV guide", "goal": GOAL, "run": True,
+            wf1 = c.post("/workflows", json={"name": "EV guide", "goal": GOAL, "run": True, "memory": memory,
                                              "budget": {"max_llm_calls": 200}}).json()["id"]
             d = wait(c, wf1, lambda w: bool(w["tasks"]), "the plan")
             print("Plan:", ", ".join(t["key"] for t in d["tasks"]))
@@ -163,7 +164,7 @@ def main() -> int:
                   and t["publish_guide"]["status"] == "SUCCEEDED")
 
             banner("3: re-plan after a permanent failure")
-            wf3 = c.post("/workflows", json={"name": "EV guide 2", "goal": GOAL, "run": False}).json()["id"]
+            wf3 = c.post("/workflows", json={"name": "EV guide 2", "goal": GOAL, "run": False, "memory": memory}).json()["id"]
             c.post(f"/workflows/{wf3}/plan").raise_for_status()
             c.post("/dev/chaos", json={"workflow_id": wf3, "task_key": "research_india", "mode": "raise_permanent"})
             c.post(f"/workflows/{wf3}/start").raise_for_status()
@@ -176,7 +177,7 @@ def main() -> int:
             check(results, "the workflow continued and COMPLETED", d3["status"] == "COMPLETED")
 
             banner("5: memory - a similar goal again")
-            wf5 = c.post("/workflows", json={"name": "EV guide 3", "goal": GOAL_2, "run": True,
+            wf5 = c.post("/workflows", json={"name": "EV guide 3", "goal": GOAL_2, "run": True, "memory": memory,
                                              "budget": {"max_llm_calls": 200}}).json()["id"]
             d5 = run_to_end(c, wf5)
             keys = ("research_india", "research_china")

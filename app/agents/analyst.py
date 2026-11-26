@@ -20,7 +20,8 @@ class AnalystAgent(BaseAgent):
     agent_type = "analyst"
     description = "Turns research results into insights, recommendations and risks."
     output_model = AnalysisOutput
-    allowed_tools = ("sql_query", "calculator")  # Part 9: query data sources, exact arithmetic
+    # Part 9: query data sources, exact arithmetic; web_fetch only if tools.yaml grants it (exfil rules apply)
+    allowed_tools = ("sql_query", "calculator", "web_fetch")
     system_prompt = """You are a senior analyst.
 Your job: reason over the research results provided in RESULTS FROM PREVIOUS TASKS and draw conclusions.
 Rules:
