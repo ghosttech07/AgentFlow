@@ -52,6 +52,17 @@ def _alembic_config() -> Config:
 
 
 @pytest.fixture(scope="session", autouse=True)
+def sample_data_source() -> None:
+    """Part 9: the read-only sample database used by sql_query (idempotent; same code as the CLI script)."""
+    import asyncio
+
+    from scripts.setup_sample_data import ensure_sample_data
+
+    s = get_settings()
+    asyncio.run(ensure_sample_data(s.database_url, s.sample_db_reader_password.get_secret_value()))
+
+
+@pytest.fixture(scope="session", autouse=True)
 def migrated_test_db() -> Iterator[None]:
     """Reset the test schema via Alembic. Sync fixture: env.py runs its own event loop."""
     db_name = make_url(TEST_DATABASE_URL).database or ""
