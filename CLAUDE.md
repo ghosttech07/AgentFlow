@@ -25,8 +25,8 @@ Only build the part currently being worked on. Do not pull later-part features f
 ### AgentFlow 2.0 (Parts 8-15)
 Positioning: a self-hosted engine for TRUSTWORTHY AI workflows. AI does the work; code guarantees
 reliability, cost limits and safety; humans approve under policy; every step is provable.
-8. [ ] **Multi-provider AI + cost control**: Gemini, Claude, OpenAI, Ollama; cross-provider
-   fallback; cost tracking; budgets; persisted quotas  <-- CURRENT
+8. [x] **Multi-provider AI + cost control**: Gemini, Claude, OpenAI, Ollama; cross-provider
+   fallback; cost tracking; budgets; persisted quotas (DONE)
 9. [ ] **Tools + safe actions**: tool registry (web, HTTP APIs, DB, files, email), side-effect rules, sandboxing
 10. [ ] **Adaptive workflows**: feedback loops, conditional branches, bounded re-planning, memory
 11. [ ] **Policy engine + users/roles**: policy-as-code, RBAC, multi-approver
@@ -71,6 +71,10 @@ Same rule: build one part, test it, then wait for the next part's prompt.
 - Free metasearch (ddgs) is flaky per engine ("No results found", throttling after bursts); the layer
   tries engines one by one (yahoo, bing, yandex, google). Tavily (free key) is the reliable upgrade.
 - When a demo runs, stop any other server on the same DB first (two single-node engines conflict).
+- Part 8 done (2026-11-26): 411 default tests pass (engine/control/cost suites 3x green, 122 each);
+  live: Ollama structured call + full local workflow PASS, one Gemini call PASS, free-dev workflow
+  COMPLETED at $0; budget/crash/controls demos PASS; whole-branch review fixes (7 Important) applied with
+  regression tests. Next: Part 9 (tools + safe actions).
 - Docker Desktop on this machine: if `docker` is not on PATH in a fresh shell, it lives at
   `C:\Users\DELL\AppData\Local\Programs\DockerDesktop\resources\bin\docker.exe`.
 
@@ -583,6 +587,20 @@ self-hosted fonts under /static/fonts): Quick Ask first with "see also" source t
 link; budget meters, budget-paused banner with an adjust form; Providers panel; provider:model and
 fallbacks per task/attempt; regions refresh without losing focus or scroll. Design record:
 PRODUCT.md, `.impeccable/surfaces/app-static-dashboard-html.md`.
+
+### Review hardening (final review, all with regression tests in tests/test_review_fixes.py)
+- A workflow is never paused by its budget once nothing else is left to run: the scheduler applies
+  fail/complete before the budget check, and the router's after-call pause skips the last task.
+- Every entry out of quota -> `quota_exhausted` (not retried), never "overloaded". Legacy routes (no
+  models.yaml) keep v1 rules: fall back only on overload/404, quota windows in America/Los_Angeles.
+- Loop order: circuit-open skip -> budget pre-checks -> adapter present? -> quota reserve -> breaker.allow()
+  -> call. The breaker is always settled (any provider answer = success; overload/timeout = failure;
+  cancellation releases a half-open trial) and a cancelled call still writes an `llm_calls` row.
+- Unreachable provider (connection refused, e.g. Ollama stopped) = overloaded -> falls back.
+- `max_cost_usd` + an unpriced paid entry -> pause before the call (`budget.unpriced_entry` warning).
+- HTTP 400/402/429 with billing/credit/quota wording (Anthropic "credit balance is too low") -> quota_exhausted.
+- Startup WARNING `router.timeout_budget` when TASK_TIMEOUT_SECONDS can't fit the first two entries' timeouts.
+- Never run two pytest sessions at once: they share agentflow_test and the schema rebuild deadlocks them.
 
 ### Live findings (2026-11-26)
 - Ollama 0.40.18 installed (winget), models `llama3.2:3b` (2.0 GB, ~5-10 s per call on the RTX 3050 6 GB)

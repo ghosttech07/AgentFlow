@@ -23,8 +23,13 @@ from app.core.errors import NotFoundError
 from app.core.events import EventType, record_event
 from app.core.state_machine import transition_workflow
 from app.db.base import utcnow
+from app.core.enums import TaskStatus
+from app.models.task import Task
 from app.models.usage import LLMCall
 from app.models.workflow import Workflow
+
+UNFINISHED = (TaskStatus.PENDING, TaskStatus.READY, TaskStatus.RUNNING, TaskStatus.RETRYING,
+              TaskStatus.AWAITING_APPROVAL)
 
 logger = logging.getLogger(__name__)
 
@@ -111,11 +116,19 @@ async def pause_locked(session: AsyncSession, wf: Workflow, limit: str, usage: U
 
 
 async def pause_for_budget(sf: async_sessionmaker[AsyncSession], workflow_id: uuid.UUID, limit: str,
-                           settings: Settings, estimated: bool = False) -> bool:
+                           settings: Settings, estimated: bool = False,
+                           current_task_id: uuid.UUID | None = None) -> bool:
     async with sf() as session:
         wf = await session.scalar(select(Workflow).where(Workflow.id == workflow_id).with_for_update())
         if wf is None:
             return False
+        if current_task_id is not None and not estimated:
+            # After a call: if no OTHER task still has work to do, let this one finish the workflow.
+            others = await session.scalar(select(func.count()).select_from(Task).where(
+                Task.workflow_id == workflow_id, Task.id != current_task_id, Task.status.in_(UNFINISHED)))
+            if not others:
+                await session.rollback()
+                return False
         eff = effective_budget(wf.budget, settings)
         paused = await pause_locked(session, wf, limit, await get_usage(session, wf), eff, estimated)
         await session.commit()

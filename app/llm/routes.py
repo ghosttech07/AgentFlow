@@ -57,6 +57,7 @@ def split_entry(entry: str) -> tuple[str, str]:
 class RouteConfig(BaseModel):
     routes: dict[str, list[str]]
     quotas: dict[str, QuotaSpec] = Field(default_factory=dict)
+    legacy: bool = False  # built from GEMINI_* settings (no models.yaml): v1 fallback rules apply
 
     @model_validator(mode="after")
     def _check(self) -> RouteConfig:
@@ -85,7 +86,10 @@ def legacy_routes(settings: Settings) -> RouteConfig:
         # Same order the Part 7 worker chain used: worker model, other fallbacks, primary last.
         worker = list(dict.fromkeys([settings.gemini_worker_model, *chain[1:], chain[0]]))
         routes.update({role: [f"gemini:{m}" for m in worker] for role in WORKER_ROLES})
-    return RouteConfig(routes=routes)
+    # Google resets daily quotas at midnight Pacific: an exhausted window must reopen then, not at UTC midnight.
+    entries = {e for route in routes.values() for e in route}
+    quotas = {e: QuotaSpec(timezone="America/Los_Angeles") for e in entries}
+    return RouteConfig(routes=routes, quotas=quotas, legacy=True)
 
 
 def load_routes(settings: Settings, available: set[str]) -> RouteConfig:

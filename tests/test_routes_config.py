@@ -25,7 +25,9 @@ def test_missing_file_builds_legacy_gemini_routes(tmp_path: Path) -> None:
     assert cfg.route_for("planner") == ["gemini:gemini-3.5-flash", "gemini:gemini-3.5-flash-lite",
                                         "gemini:gemini-3.1-flash-lite"]
     assert cfg.route_for("writer") == cfg.route_for("planner")
-    assert cfg.quotas == {}
+    assert cfg.legacy is True  # v1 fallback rules; Google's quota day (midnight Pacific) for each entry
+    assert {q.timezone for q in cfg.quotas.values()} == {"America/Los_Angeles"}
+    assert all(q.requests_per_day is None for q in cfg.quotas.values())
 
 
 def test_legacy_worker_model_goes_first_for_workers(tmp_path: Path) -> None:

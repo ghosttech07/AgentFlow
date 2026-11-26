@@ -133,7 +133,8 @@ OPENAI_ERRORS = [
                                                         "type": "invalid_request_error", "code": "model_not_found"}}),
      LLMModelNotFoundError, None),
     (openai.APITimeoutError(request=httpx2.Request("POST", "https://api.example/v1")), LLMTimeoutError, None),
-    (openai.APIConnectionError(request=httpx2.Request("POST", "http://localhost:11434/v1")), LLMTransientError, None),
+    # unreachable (e.g. Ollama stopped) = unavailable -> overloaded, so the router falls back (review I-4)
+    (openai.APIConnectionError(request=httpx2.Request("POST", "http://localhost:11434/v1")), LLMOverloadedError, None),
 ]
 
 

@@ -17,6 +17,7 @@ All entries fail -> LLMOverloadedError if any was overloaded, else the last erro
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any
@@ -47,6 +48,24 @@ from app.models.workflow import Workflow
 logger = logging.getLogger(__name__)
 
 FALLBACK_ERRORS = (LLMOverloadedError, LLMQuotaExhaustedError, LLMModelNotFoundError, LLMTimeoutError)
+LEGACY_FALLBACK_ERRORS = (LLMOverloadedError, LLMModelNotFoundError)  # the v1 GeminiClient rule
+
+
+def entry_timeout(entry: str, settings: Settings) -> float:
+    return settings.gemini_timeout_seconds if entry.startswith("gemini:") else settings.llm_timeout_seconds
+
+
+def check_timeouts(settings: Settings, routes: RouteConfig) -> None:
+    """Warn when a slow first entry would leave no task time for its fallback (TASK_TIMEOUT_SECONDS)."""
+    for role, chain in routes.routes.items():
+        if len(chain) < 2:
+            continue
+        needed = entry_timeout(chain[0], settings) + entry_timeout(chain[1], settings)
+        if settings.task_timeout_seconds <= needed:
+            logger.warning("router.timeout_budget role=%s: TASK_TIMEOUT_SECONDS=%s leaves no room for a fallback "
+                           "after %s times out (%ss + %ss for the next entry); raise the task timeout or lower "
+                           "LLM_TIMEOUT_SECONDS / GEMINI_TIMEOUT_SECONDS", role, settings.task_timeout_seconds,
+                           chain[0], entry_timeout(chain[0], settings), entry_timeout(chain[1], settings))
 
 
 class ModelRouter:
@@ -73,6 +92,7 @@ class ModelRouter:
         self.routes = load_routes(self.settings, set(self.providers))
         path = self.settings.pricing_config_path
         self.pricing = Pricing.load(path if path.is_absolute() else PROJECT_ROOT / path)
+        check_timeouts(self.settings, self.routes)
         logger.info("router.ready providers=%s routes=%s", sorted(self.providers),
                     {role: entries for role, entries in self.routes.routes.items()})
 
@@ -95,40 +115,54 @@ class ModelRouter:
         await self._budget_before(ctx, role, chain[0], prompt_chars, estimate=False)
 
         errors: list[LLMError] = []
+        skipped_quota = False
+        # Legacy (no models.yaml) keeps the v1 rule: fall back only on overload and model-not-found.
+        fallback_on = LEGACY_FALLBACK_ERRORS if self.routes.legacy else FALLBACK_ERRORS
         for position, entry in enumerate(chain):
-            if not self.breaker.allow(entry):
+            if self.breaker.state(entry) == "open":
                 logger.warning("llm.entry_skipped entry=%s reason=circuit_open", entry)
                 continue
-            await self._budget_before(ctx, role, entry, prompt_chars, estimate=True)  # before using quota
-            if self.session_factory is not None and not await quota.try_reserve(
-                    self.session_factory, entry, self.routes.quotas.get(entry), self.settings):
-                continue  # quota used up / window exhausted (logged once per window by quota)
+            # Budget and quota first, so a pause or a full window never consumes a half-open trial.
+            await self._budget_before(ctx, role, entry, prompt_chars, estimate=True)
             provider_name, model_name = split_entry(entry)
             adapter = self.providers.get(provider_name)
+            if adapter is None:  # only on the unfiltered legacy route (no key): fail exactly as before
+                logger.error("llm.auth_failed entry=%s: provider not configured (missing API key)", entry)
+                raise LLMAuthError(f"Provider '{provider_name}' is not configured (missing API key)")
+            if self.session_factory is not None and not await quota.try_reserve(
+                    self.session_factory, entry, self.routes.quotas.get(entry), self.settings):
+                skipped_quota = True  # used up / window exhausted (logged once per window by quota)
+                continue
+            if not self.breaker.allow(entry):  # half-open and its single trial is already in flight
+                continue
             fallback_from = chain[0] if position > 0 else None
             started = time.perf_counter()
             try:
-                if adapter is None:  # only possible on the unfiltered legacy route (no key): fail as before
-                    raise LLMAuthError(f"Provider '{provider_name}' is not configured (missing API key)")
                 response = await adapter.generate(model_name, system_prompt, user_prompt, output_model,
                                                   use_search=use_search, thinking_level=thinking_level)
+            except asyncio.CancelledError:  # task timeout / lease lost / shutdown: release, record, re-raise
+                self.breaker.release(entry)
+                await asyncio.shield(self._record(ctx, role, provider_name, model_name, "cancelled", None, 0, 0,
+                                                  None, int((time.perf_counter() - started) * 1000), position,
+                                                  fallback_from))
+                raise
             except LLMError as exc:
                 latency = int((time.perf_counter() - started) * 1000)
-                if adapter is not None:
-                    await self._record(ctx, role, provider_name, model_name, "failed", exc.error_type, 0, 0, None,
-                                       latency, position, fallback_from)
+                await self._record(ctx, role, provider_name, model_name, "failed", exc.error_type, 0, 0, None,
+                                   latency, position, fallback_from)
+                if isinstance(exc, (LLMOverloadedError, LLMTimeoutError)):
+                    self.breaker.record_failure(entry)  # unavailable
+                else:
+                    self.breaker.record_success(entry)  # it answered (quota, 404, auth, bad output, ...)
+                if isinstance(exc, LLMQuotaExhaustedError) and self.session_factory is not None:
+                    await quota.mark_exhausted(self.session_factory, entry, self.routes.quotas.get(entry),
+                                               self.settings)
                 if isinstance(exc, LLMAuthError):
                     logger.error("llm.auth_failed entry=%s: misconfiguration (check the API key); not falling "
                                  "back", entry)
                     raise
-                if isinstance(exc, LLMOutputError) or not isinstance(exc, FALLBACK_ERRORS):
-                    self.breaker.record_success(entry)  # the provider answered
+                if isinstance(exc, LLMOutputError) or not isinstance(exc, fallback_on):
                     raise
-                if isinstance(exc, LLMQuotaExhaustedError) and self.session_factory is not None:
-                    await quota.mark_exhausted(self.session_factory, entry, self.routes.quotas.get(entry),
-                                               self.settings)
-                if isinstance(exc, (LLMOverloadedError, LLMTimeoutError)):
-                    self.breaker.record_failure(entry)
                 errors.append(exc)
                 logger.warning("llm.fallback entry=%s reason=%s next=%s", entry, exc.error_type,
                                chain[position + 1] if position + 1 < len(chain) else "none")
@@ -148,15 +182,21 @@ class ModelRouter:
             return response
 
         overloaded = [e for e in errors if isinstance(e, LLMOverloadedError)]
-        if overloaded or not errors:
-            last = overloaded[-1] if overloaded else None
+        if overloaded:
+            last = overloaded[-1]
             raise LLMOverloadedError(
-                f"All models unavailable for role '{role or 'default'}' ({', '.join(chain)})"
-                + (f": {last.message}" if last else ": circuits open or quotas used up"),
-                retry_after_seconds=(last.retry_after_seconds if last else None)
-                or self.breaker.seconds_until_available(chain),
+                f"All models unavailable for role '{role or 'default'}' ({', '.join(chain)}): {last.message}",
+                retry_after_seconds=last.retry_after_seconds or self.breaker.seconds_until_available(chain),
             )
-        raise errors[-1]
+        if errors:
+            raise errors[-1]
+        if skipped_quota:  # nothing was tried because every usable entry is out of quota: not retryable
+            raise LLMQuotaExhaustedError(
+                f"Every model for role '{role or 'default'}' is out of quota until its window resets "
+                f"({', '.join(chain)})")
+        raise LLMOverloadedError(
+            f"All models for role '{role or 'default'}' have an open circuit ({', '.join(chain)})",
+            retry_after_seconds=self.breaker.seconds_until_available(chain))
 
     # ------------------------------------------------------------------ usage + budgets
     async def _record(self, ctx: CallContext | None, role: str | None, provider: str, model: str, outcome: str,
@@ -195,11 +235,15 @@ class ModelRouter:
                 output = await bs.typical_output_tokens(session, role) or self.settings.default_estimated_output_tokens
                 cost = self.pricing.cost(entry, prompt_chars // 4, output)
                 usage = await bs.get_usage(session, wf)
-                if cost is None or usage.cost_usd + cost <= eff["max_cost_usd"]:
+                if cost is None:  # a cost limit cannot be enforced on an unpriced paid model: stop, don't guess
+                    logger.warning("budget.unpriced_entry workflow=%s entry=%s max_cost_usd=%s: add its price to "
+                                   "pricing.yaml or remove the cost limit", wf.id, entry, eff["max_cost_usd"])
+                elif usage.cost_usd + cost <= eff["max_cost_usd"]:
                     return
                 which, estimated = "max_cost_usd", True
-                logger.warning("budget.estimate_guard workflow=%s entry=%s spent=%.6f estimate=%.6f max=%s",
-                               wf.id, entry, usage.cost_usd, cost, eff["max_cost_usd"])
+                logger.warning("budget.estimate_guard workflow=%s entry=%s spent=%.6f estimate=%s max=%s",
+                               wf.id, entry, usage.cost_usd, "unpriced" if cost is None else f"{cost:.6f}",
+                               eff["max_cost_usd"])
         await bs.pause_for_budget(self.session_factory, ctx.workflow_id, which, self.settings, estimated=estimated)
         raise BudgetPause(which)
 
@@ -214,4 +258,5 @@ class ModelRouter:
                 return
             which = bs.exceeded(bs.effective_budget(wf.budget, self.settings), await bs.get_usage(session, wf))
         if which:
-            await bs.pause_for_budget(self.session_factory, ctx.workflow_id, which, self.settings)
+            await bs.pause_for_budget(self.session_factory, ctx.workflow_id, which, self.settings,
+                                      current_task_id=ctx.task_id)

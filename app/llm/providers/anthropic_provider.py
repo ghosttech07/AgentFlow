@@ -23,7 +23,6 @@ from app.llm.errors import (
     LLMPermanentError,
     LLMQuotaExhaustedError,
     LLMTimeoutError,
-    LLMTransientError,
 )
 from app.llm.providers.base import EFFORT, parse_json, repair_prompt, retry_after_header, status_error
 
@@ -108,7 +107,7 @@ class AnthropicProvider:
         if isinstance(exc, (TimeoutError, anthropic.APITimeoutError)):  # APITimeoutError before its parent
             return LLMTimeoutError("anthropic request timed out")
         if isinstance(exc, anthropic.APIConnectionError):
-            return LLMTransientError(f"Cannot reach anthropic: {type(exc).__name__}")
+            return LLMOverloadedError(f"Cannot reach anthropic: {type(exc).__name__}")  # unavailable -> fall back
         if _SPEND_LIMIT_ERRORS and isinstance(exc, _SPEND_LIMIT_ERRORS):
             return LLMQuotaExhaustedError(f"anthropic spend limit reached: {getattr(exc, 'message', exc)}",
                                           details={"provider": "anthropic"})

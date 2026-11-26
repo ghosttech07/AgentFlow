@@ -136,15 +136,6 @@ async def schedule_workflow(
         ).all()
     )
 
-    # Budget (Part 8): a reached limit pauses the workflow here, before anything else is promoted or
-    # claimed (claim_tasks only takes READY tasks of RUNNING workflows).
-    eff = budget_service.effective_budget(wf.budget, settings)
-    usage = await budget_service.get_usage(session, wf)
-    if (limit := budget_service.exceeded(eff, usage)) is not None:
-        await budget_service.pause_locked(session, wf, limit, usage, eff)
-        await session.commit()
-        return 1
-
     # Expired approvals fail their task (approval_expired); the failure rule below fails the workflow.
     changes = await approval_service.expire_due(session, wf, tasks)
 
@@ -168,6 +159,15 @@ async def schedule_workflow(
         await _complete(session, wf, tasks)
         await session.commit()
         return changes + 1
+
+    # Budget (Part 8): a reached limit pauses the workflow here, after the failure and
+    # completion rules (a finished workflow is never paused) and before anything is promoted or claimed (claim_tasks only takes READY tasks of RUNNING workflows).
+    eff = budget_service.effective_budget(wf.budget, settings)
+    usage = await budget_service.get_usage(session, wf)
+    if (limit := budget_service.exceeded(eff, usage)) is not None:
+        await budget_service.pause_locked(session, wf, limit, usage, eff)
+        await session.commit()
+        return 1
 
     now = utcnow()
     for t in tasks:

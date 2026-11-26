@@ -27,7 +27,7 @@ from app.llm.errors import (
 # thinking_level -> the "effort" vocabulary OpenAI (reasoning_effort) and Anthropic (output_config.effort) use
 EFFORT = {"minimal": "low", "low": "low", "medium": "medium", "high": "high"}
 _QUOTA_RE = re.compile(r"insufficient_quota|exceeded your current quota|billing|spend limit|usage limit|"
-                       r"per day|daily", re.I)
+                       r"credit balance|payment required|per day|daily", re.I)
 _RETRY_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*$")
 
 
@@ -50,8 +50,11 @@ def status_error(provider: str, status: int, message: str, retry_after: float | 
     """HTTP status (+ message wording for 429) -> taxonomy class. Shared by the non-Gemini adapters."""
     text = f"{provider} API error {status}: {message}"
     kw = {"details": {"http_status": status, "provider": provider}, "retry_after_seconds": retry_after}
+    # Billing / credit / quota exhaustion: route around it (Anthropic sends "credit balance is too low" as 400).
+    if status in (400, 402, 429) and _QUOTA_RE.search(message):
+        return LLMQuotaExhaustedError(text, **kw)
     if status == 429:
-        return LLMQuotaExhaustedError(text, **kw) if _QUOTA_RE.search(message) else LLMTransientError(text, **kw)
+        return LLMTransientError(text, **kw)
     if status in (503, 529):
         return LLMOverloadedError(text, **kw)
     if status in (401, 403):

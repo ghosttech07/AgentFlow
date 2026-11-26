@@ -17,7 +17,7 @@ import openai
 from pydantic import BaseModel, ValidationError
 
 from app.llm.base import LLMResponse
-from app.llm.errors import LLMError, LLMOutputError, LLMPermanentError, LLMTimeoutError, LLMTransientError
+from app.llm.errors import LLMError, LLMOutputError, LLMOverloadedError, LLMPermanentError, LLMTimeoutError
 from app.llm.providers.base import EFFORT, parse_json, repair_prompt, retry_after_header, status_error
 
 logger = logging.getLogger(__name__)
@@ -102,7 +102,8 @@ class OpenAICompatProvider:
         if isinstance(exc, (TimeoutError, openai.APITimeoutError)):  # APITimeoutError before its parent
             return LLMTimeoutError(f"{self.name} request timed out")
         if isinstance(exc, openai.APIConnectionError):
-            return LLMTransientError(f"Cannot reach {self.name}: {type(exc).__name__}")
+            # Unreachable (e.g. a stopped Ollama) = unavailable: overloaded, so the router tries the next entry.
+            return LLMOverloadedError(f"Cannot reach {self.name}: {type(exc).__name__}")
         if isinstance(exc, openai.APIStatusError):
             return status_error(self.name, exc.status_code, f"{exc.message} {exc.body or ''}",
                                 retry_after_header(exc.response.headers))
