@@ -6,8 +6,8 @@ from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from app.db.base import Base
 import app.models  # noqa: F401
+from app.db.base import Base
 
 
 async def test_models_match_migrations(engine: AsyncEngine) -> None:

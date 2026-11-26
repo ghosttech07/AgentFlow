@@ -238,9 +238,9 @@ async def _approve_tool_call(session: AsyncSession, approval: Approval, override
                              allow_recipient_override: bool) -> dict[str, Any]:
     """Validate the (possibly edited) arguments against the tool's schema; the journal row gets the final
     arguments and their idempotency key (the key is computed on what actually executes)."""
-    import app.tools.catalog  # noqa: F401
     from pydantic import ValidationError
 
+    import app.tools.catalog  # noqa: F401
     from app.models.tool_call import ToolCall
     from app.tools import journal
     from app.tools.registry import get_tool

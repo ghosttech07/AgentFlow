@@ -36,8 +36,8 @@ from app.engine.scheduler import Claim, task_metrics
 from app.llm.base import LLMClient
 from app.llm.context import CallContext, use_context
 from app.llm.errors import BudgetPause, LLMError
-from app.tools.loop import ToolApprovalNeeded
 from app.models.task import Task
+from app.tools.loop import ToolApprovalNeeded
 
 logger = logging.getLogger(__name__)
 

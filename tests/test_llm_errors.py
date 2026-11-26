@@ -76,7 +76,7 @@ def test_permanent_http_codes(code: int) -> None:
 
 
 @pytest.mark.parametrize(
-    "exc", [TimeoutError(), asyncio.TimeoutError(), httpx.ConnectError("x"), ConnectionResetError()]
+    "exc", [TimeoutError(), TimeoutError(), httpx.ConnectError("x"), ConnectionResetError()]
 )
 def test_timeouts_and_network_errors_are_transient(exc: BaseException) -> None:
     assert isinstance(classify_exception(exc), LLMTransientError)

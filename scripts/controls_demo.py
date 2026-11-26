@@ -15,11 +15,10 @@ import json
 import os
 import sys
 import time
-from pathlib import Path
 from collections.abc import Callable
+from pathlib import Path
 
 import httpx
-
 from crash_demo import banner, get_settings, start_server
 
 PUBLISH_GOAL = "Write a short beginner guide on EV adoption in India and publish it"

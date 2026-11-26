@@ -12,7 +12,6 @@ from app.llm.errors import (
     LLMAuthError,
     LLMModelNotFoundError,
     LLMOverloadedError,
-    LLMPermanentError,
     LLMQuotaExhaustedError,
     LLMTransientError,
     classify_exception,

@@ -22,5 +22,9 @@ htmlcov/
 Thumbs.db
 logs/
 outputs/
+reports/
+# Local, machine-specific config (copy from the *.example.yaml files, which stay committed)
+config/tools.yaml
+config/models.yaml
 .superpowers/
 .impeccable/

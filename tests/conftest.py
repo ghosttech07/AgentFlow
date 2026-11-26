@@ -24,16 +24,15 @@ os.environ["WEB_SEARCH_PROVIDER"] = "none"  # tests never touch the internet
 os.environ["GEMINI_WORKER_MODEL"] = ""
 
 import pytest
-from alembic import command
 from alembic.config import Config
+from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import make_url, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from alembic import command
 from app.config import PROJECT_ROOT, get_settings
-from fastapi import FastAPI
-
 from app.db.session import get_session
 from app.engine import Engine
 from app.llm import get_llm_client
@@ -49,6 +48,16 @@ def _alembic_config() -> Config:
     cfg.attributes["database_url"] = TEST_DATABASE_URL
     cfg.attributes["skip_logging_config"] = True
     return cfg
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_configure(config: pytest.Config) -> None:
+    """Every run leaves a JUnit XML report in reports/ (git-ignored), so a failure is always identifiable later."""
+    if not config.option.xmlpath:
+        from datetime import UTC, datetime
+
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        config.option.xmlpath = str(PROJECT_ROOT / "reports" / f"junit-{stamp}.xml")
 
 
 @pytest.fixture(scope="session", autouse=True)

@@ -9,7 +9,18 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, ForeignKey, Identity, Index, Integer, Numeric, String, UniqueConstraint, func
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    ForeignKey,
+    Identity,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, utcnow

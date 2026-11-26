@@ -13,7 +13,6 @@ import sys
 import time
 
 import httpx
-
 from crash_demo import banner, start_server
 
 GOAL = "Write a short market brief on solar power in Kenya"

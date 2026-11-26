@@ -1,4 +1,8 @@
-# Part 1: only PostgreSQL runs in Docker. The FastAPI app runs locally via uvicorn.
+# PostgreSQL always runs in Docker. The app runs locally with uvicorn, OR fully in Docker with the "full" profile:
+#   docker compose up -d                     # database only (local development)
+#   docker compose --profile full up -d --build   # database + AgentFlow at http://localhost:8000/dashboard
+# The full profile starts in demo mode (LLM_PROVIDER=fake, no key needed). For real models put the keys in .env
+# (GEMINI_API_KEY=..., LLM_PROVIDER=gemini); .env is read if it exists.
 services:
   postgres:
     image: postgres:16
@@ -21,6 +25,32 @@ services:
       timeout: 5s
       retries: 10
       start_period: 10s
+
+  app:
+    profiles: ["full"]
+    build: .
+    container_name: agentflow-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+asyncpg://agentflow:agentflow@postgres:5432/agentflow
+      TEST_DATABASE_URL: postgresql+asyncpg://agentflow:agentflow@postgres:5432/agentflow_test
+      SAMPLE_DATA_URL: postgresql+asyncpg://agentflow_reader:reader@postgres:5432/agentflow_sample
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434/v1}
+      LLM_PROVIDER: ${LLM_PROVIDER:-fake}
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
 
 volumes:
   agentflow_pgdata:

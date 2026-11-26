@@ -1,5 +1,7 @@
 # AgentFlow
 
+[![CI](https://github.com/ghosttech07/AgentFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/ghosttech07/AgentFlow/actions/workflows/ci.yml)
+
 **A self-hosted engine for trustworthy AI workflows.** You give it a goal; a team of AI agents plans
 the work, researches the live web, analyses, writes and reviews it. Code, not the AI, controls
 everything that matters: the order of steps, retries, crash recovery, cost limits and which actions
@@ -68,6 +70,9 @@ alembic upgrade head
 python scripts/setup_sample_data.py
 LLM_PROVIDER=fake uvicorn app.main:app
 ```
+
+**Or run everything in Docker** (no Python needed): `docker compose --profile full up -d --build`, then open
+http://localhost:8000/dashboard (demo mode; put keys in `.env` and `LLM_PROVIDER=gemini` for real models).
 
 Open **http://127.0.0.1:8000/dashboard**. Ask a question, or switch to **Deep research** and give it a
 goal. The API docs are at `/docs`.
@@ -224,7 +229,7 @@ Honest status as of 2026-11-26:
   `ENGINE_SINGLE_NODE=false`, and a load test is Part 14.
 - **No feedback loops or re-planning** yet (Part 10), and no code-execution tool.
 - **Voice input** is shown in the dashboard but not built yet.
-- **No CI pipeline and no Docker image for the app** yet; tests run locally and the app runs with Python.
+- **CI runs on GitHub** (secret scan, ruff, the full test suite on Postgres 16); the Docker image is for demos and single-machine use, not a hardened production image.
 
 ## Roadmap
 

@@ -10,13 +10,12 @@ from app.config import get_settings
 from app.llm import get_llm_client
 from app.llm.circuit import CircuitBreaker
 from app.llm.errors import LLMOverloadedError
+from app.llm.fake_client import fake_data
 from app.llm.pricing import Pricing
 from app.llm.router import ModelRouter
 from app.llm.routes import QuotaSpec, RouteConfig
 from tests.engine_helpers import started_workflow, task
 from tests.test_router import Out, StubProvider
-
-from app.llm.fake_client import fake_data
 
 
 class AgentStub(StubProvider):

@@ -24,6 +24,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import app.tools.catalog  # noqa: E402,F401  (registers every tool)
 from app.agents import AgentInput, create_agent  # noqa: E402
 from app.config import get_settings  # noqa: E402
 from app.db.session import SessionLocal  # noqa: E402
@@ -34,7 +35,6 @@ from app.llm.providers.ollama_provider import make_ollama  # noqa: E402
 from app.llm.router import ModelRouter  # noqa: E402
 from app.llm.routes import RouteConfig  # noqa: E402
 from app.models import Task, TaskAttempt, Workflow  # noqa: E402
-import app.tools.catalog  # noqa: E402,F401  (registers every tool)
 from app.tools.config import ToolsConfig  # noqa: E402
 from app.tools.loop import ToolLoop, ToolRuntime  # noqa: E402
 

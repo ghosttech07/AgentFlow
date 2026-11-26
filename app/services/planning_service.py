@@ -22,7 +22,6 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.llm.context import CallContext, use_context
 from app.agents import AgentInput, create_agent
 from app.agents.planner import Plan, plannable_agent_types
 from app.config import get_settings
@@ -32,6 +31,7 @@ from app.core.errors import AppError, ConflictError, NotFoundError
 from app.core.events import EventType, record_event
 from app.core.state_machine import transition_workflow
 from app.llm.base import LLMClient
+from app.llm.context import CallContext, use_context
 from app.models.task import Task
 from app.models.workflow import Workflow
 from app.schemas.plan import PlanConstraints
