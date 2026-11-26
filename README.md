@@ -1,225 +1,264 @@
 # AgentFlow
 
-A backend engine that turns a goal into finished work with a team of AI agents, and keeps going
-when things break.
+**A self-hosted engine for trustworthy AI workflows.** You give it a goal; a team of AI agents plans
+the work, researches the live web, analyses, writes and reviews it. Code, not the AI, controls
+everything that matters: the order of steps, retries, crash recovery, cost limits and which actions
+need a human's approval. Every step is stored in PostgreSQL, so **you can kill the server in the
+middle of a run, restart it, and it carries on exactly where it stopped without redoing finished work.**
 
-You submit a goal ("Write a short beginner guide on EV adoption in India and publish it"). A
-**planner** agent (Gemini) breaks it into a graph of tasks; **specialist agents** (researcher,
-analyst, writer, reviewer, publisher) run them in dependency order, independent tasks in parallel.
-Every state change is stored in **PostgreSQL**, so a crash loses nothing: on restart the engine
-keeps the finished tasks and re-runs only the one that was interrupted. A human can **pause,
-resume or cancel** any workflow, and **sensitive steps wait for explicit approval**.
+![AgentFlow: ask a question or start deep research](docs/images/dashboard-home.png)
 
-Research is **live**: the researcher searches the web, reads the top pages and cites every finding
-`[n]` (free, no search key needed). For quick questions, **Quick Ask** returns a cited answer from
-the live web in seconds, without running a full workflow.
+> **Rule of the codebase: AI decides content, code decides control.** Agents only produce text.
+> Plans are validated by code, every status change goes through one state machine, and every side
+> effect is idempotent.
 
-```
-goal ──► Planner (LLM) ──► validated task DAG ──► Engine (scheduler + worker pool) ──► result
-                             code checks it        every step persisted in Postgres
-                                                   retries · leases · crash recovery
-                                                   pause/resume/cancel · approvals
-```
+---
 
-**Rule of the codebase: AI decides content, code decides control.** Agents only produce content.
-Planning is validated by code, and status changes go through one state machine.
+## Contents
+[What it does](#what-it-does) · [Try it in 5 minutes](#try-it-in-5-minutes) ·
+[The crash demo](#the-headline-demo-crash-restart-resume) · [Architecture](#architecture) ·
+[Key trade-offs](#key-design-decisions-and-trade-offs) · [Reliability](#how-failures-are-handled) ·
+[Tests](#tests) · [Limitations](#limitations-and-whats-not-done-yet) · [Roadmap](#roadmap) ·
+[API](#api) · [Configuration](#configuration)
 
-## Quick start (no API key needed)
+## What it does
 
-Prerequisites: Python 3.11+ (3.12 recommended) and Docker Desktop.
+| Capability | How |
+|---|---|
+| **Planning and delegation** | A planner agent turns the goal into a graph of tasks (researcher, analyst, writer, reviewer, publisher). Code checks the plan (valid keys, known agents, no cycles) and sends errors back for repair; an invalid plan never reaches the database. |
+| **Dependency-aware, parallel execution** | A scheduler runs each task once everything it depends on is done; independent tasks run in parallel on a bounded worker pool. |
+| **Persistent state, retries, recovery** | Workflows, tasks, attempts and events live in PostgreSQL. Failed calls retry with exponential backoff and jitter. Workers hold leases with heartbeats; after a crash, the restart reclaims the orphaned task and continues. |
+| **Pause, resume, cancel** | Graceful or immediate pause, resume, cancel and retry, from the API or the dashboard, all recorded with who did it and why. |
+| **Human approval checkpoints** | Sensitive steps (publishing, and in Part 9 any outside action such as email) wait for an explicit approval. The approver sees exactly what will happen and can edit it first. |
+| **Live, cited research** | The researcher searches the web, reads the pages and cites every finding as `[n]`; code removes any source it did not actually read. |
+| **Any AI provider, with cost control** | Gemini, Anthropic Claude, OpenAI or a free local model through Ollama, with automatic fallback, a price for every call, budgets that pause (not fail) a workflow, and daily quotas that survive restarts. |
+| **Answer-engine dashboard** | Ask a quick question (cited answer in seconds) or start deep research, watch each step, approve, and reopen anything from the history. |
+
+### Where the answers come from (the "brain")
+AgentFlow contains no AI model itself. Whoever runs the server connects one in `.env` or
+`config/models.yaml`: an API key for **Gemini, Claude or OpenAI**, and/or **Ollama** running locally
+(free, private, offline). People using the dashboard never type an AI key. A demo mode
+(`LLM_PROVIDER=fake`) runs everything with canned answers, with no key and no cost.
+
+## Try it in 5 minutes
+
+You need Python 3.11+ (3.12 recommended) and Docker Desktop. No API key is needed for the demo.
 
 **Windows (PowerShell)**
 ```powershell
+git clone https://github.com/ghosttech07/AgentFlow.git; cd AgentFlow
 Copy-Item .env.example .env
-docker compose up -d                 # PostgreSQL 16; wait until `docker compose ps` says healthy
-py -3.12 -m venv .venv
-.\.venv\Scripts\Activate.ps1
+docker compose up -d                       # PostgreSQL 16 (wait until `docker compose ps` says healthy)
+py -3.12 -m venv .venv; .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 alembic upgrade head
-$env:LLM_PROVIDER = "fake"           # canned agent output, no Gemini calls
+python scripts/setup_sample_data.py        # read-only sample database for the SQL tool (fake numbers)
+$env:LLM_PROVIDER = "fake"                 # demo mode: canned answers, no AI calls
 uvicorn app.main:app
 ```
 
 **macOS / Linux**
 ```bash
+git clone https://github.com/ghosttech07/AgentFlow.git && cd AgentFlow
 cp .env.example .env
 docker compose up -d
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 alembic upgrade head
+python scripts/setup_sample_data.py
 LLM_PROVIDER=fake uvicorn app.main:app
 ```
 
-Open **http://127.0.0.1:8000/dashboard**: ask a question at the top (Quick Ask) or type a goal to
-run a full workflow. API docs are at `/docs`.
-To use real Gemini, put `GEMINI_API_KEY` in `.env` and drop `LLM_PROVIDER=fake`.
+Open **http://127.0.0.1:8000/dashboard**. Ask a question, or switch to **Deep research** and give it a
+goal. The API docs are at `/docs`.
 
-## Demos
+**Use a real model:** put `GEMINI_API_KEY=...` in `.env` (free key at Google AI Studio) and start without
+`LLM_PROVIDER=fake`. For free local models, install [Ollama](https://ollama.com), run
+`ollama pull llama3.2:3b`, and copy a profile from [config/models.example.yaml](config/models.example.yaml)
+to `config/models.yaml`.
 
-Each demo starts its own server on port 8765, so stop any other server on the same database first.
+## The headline demo: crash, restart, resume
+
+```bash
+python scripts/crash_demo.py --fake        # add nothing else; drop --fake to use Gemini
+```
+It starts its own server, runs a multi-agent workflow, and **kills the process (`os._exit`) while the
+writer agent is working**. While the server is down it reads the database directly: the research and
+analysis tasks are `SUCCEEDED`, the writer is still `RUNNING` with a lease from a dead process. It then
+restarts the server, which logs `engine.recovered`, reclaims the writer and finishes the workflow.
+The script checks and prints **PASS** only if:
+- the tasks that finished before the crash ran exactly **once** (nothing was redone), and
+- the writer shows attempt 1 = `worker_lost` and attempt 2 = `succeeded`.
+
+It ends by printing the timeline built from the database. Other demos:
 
 | Command | Shows |
 |---|---|
-| `python scripts/crash_demo.py --fake` | **The headline demo.** Runs a workflow, kills the server (`os._exit`) while the writer runs, reads the DB while it's down (finished tasks SUCCEEDED, writer still RUNNING), restarts, and shows `engine.recovered`. The writer resumes (attempt 1 `worker_lost`, attempt 2 `succeeded`), the workflow completes and nothing finished is redone. Ends with the timeline and **PASS/FAIL**. Drop `--fake` to use Gemini. |
-| `python scripts/controls_demo.py` | A: pause (no new tasks for 5s), resume, approve the publish step with an edited title; it is published exactly once. B: reject with `skip_task`; the workflow completes with nothing published. C: cancel while tasks run; in-flight results are discarded. |
-| `python scripts/budget_demo.py` | A workflow with `max_llm_calls: 3` pauses at the limit, the budget is raised, it resumes and completes (fake LLM). |
-| `python scripts/run_workflow.py "<goal>"` | Runs any goal against a running server with a live progress table, then prints the final text. |
+| `python scripts/controls_demo.py` | Pause and resume; approve a publish step with an edited title (published exactly once); reject and skip a step; cancel while tasks run. |
+| `python scripts/budget_demo.py` | A workflow hits `max_llm_calls`, pauses, the budget is raised, it resumes and completes. |
+| `python scripts/run_workflow.py "<goal>"` | Runs any goal against a running server with a live progress table. |
 
-## How it works
+Each demo starts its own server on port 8765; stop any other AgentFlow server on the same database first.
 
-| Piece | Where | What it does |
-|---|---|---|
-| Planner | `app/agents/planner.py`, `app/services/planning_service.py` | LLM proposes a plan; `app/core/dag.py` checks keys, deps, cycles and agent types. Invalid plans are sent back with the exact errors (max 2 repairs). |
-| Agents | `app/agents/` | researcher, analyst, writer, reviewer (Gemini, structured JSON output) and publisher (no LLM, sensitive). |
-| Engine | `app/engine/` | A loop that reads state from the DB on every tick: promote ready tasks, claim them (`FOR UPDATE SKIP LOCKED`), and run them on a bounded worker pool. |
-| Reliability | `app/engine/retry.py`, `recovery.py`, `worker.py` | Retries with exponential backoff and full jitter; model fallback with a circuit breaker; leases and heartbeats; a reaper for dead workers; startup recovery; every save is guarded (status + lease owner + attempt) so a stale worker can never overwrite newer work. |
-| Human controls | `app/services/control_service.py`, `approval_service.py` | Pause (graceful or immediate), resume, cancel, approval checkpoints with expiry, input overrides and reject modes. |
-| Observability | `app/services/timeline_service.py`, `app/static/dashboard.html` | Event log, readable timeline with per-attempt spans, and the dashboard. |
+## Architecture
 
-### Failure handling at a glance
-- **Transient errors** (timeouts, 429 per minute, 5xx, overloaded) are retried with backoff and
-  `retry_after` is respected. **Permanent errors, quota exhaustion and rejections** are not retried.
-- **Overloaded, out-of-quota or missing model**: the router tries the next `provider:model` in the
-  role's route (across Gemini, Claude, OpenAI and local Ollama); the one actually used, its cost and
-  any fallback are recorded on the task.
-- **Process crash**: on restart, RUNNING tasks are reclaimed as `worker_lost` and retried, and
-  interrupted planning is re-planned. SUCCEEDED tasks are never re-run.
-- **Side effects**: the publisher is idempotent (`<workflow>:<task>` unique key), so a crash or
-  retry never publishes twice.
-- **Fault injection (dev only)**: `POST /dev/chaos` can crash the process, raise transient,
-  overloaded or permanent errors, or hang a chosen task.
-
-## Multi-provider AI and cost control
-
-AgentFlow talks to **Gemini, Anthropic Claude, OpenAI and local Ollama** (free) through one router.
-With only `GEMINI_API_KEY` set and no `config/models.yaml`, everything behaves exactly like before.
-
-**Routes (`config/models.yaml`).** Each agent role gets an ordered list of `provider:model` entries;
-roles without their own route use `default`. Copy a profile from
-[config/models.example.yaml](config/models.example.yaml) (Gemini-only, free dev with Ollama first,
-best quality across providers). List what your keys and machine actually offer with
-`python scripts/list_provider_models.py`.
-```yaml
-routes:
-  default: ["gemini:gemini-3.5-flash-lite", "gemini:gemini-3.1-flash-lite", "ollama:llama3.2:3b"]
-  planner: ["gemini:gemini-3.5-flash", "gemini:gemini-3.5-flash-lite", "ollama:llama3.2:3b"]
-quotas:
-  "gemini:gemini-3.5-flash": {requests_per_day: 20, timezone: America/Los_Angeles}
+```mermaid
+flowchart LR
+  UI[Dashboard / REST API] --> SVC[Services<br/>workflow · planning · control · approval · budget]
+  SVC --> SM[State machine<br/>one event per change]
+  SM --> DB[(PostgreSQL<br/>workflows · tasks · attempts<br/>events · approvals · llm_calls)]
+  subgraph Engine [Engine loop: every tick re-reads the DB]
+    PICK[pick up run requests] --> REAP[reap expired leases] --> SCHED[schedule:<br/>budget · approvals · promote · complete/fail] --> CLAIM[claim READY tasks<br/>FOR UPDATE SKIP LOCKED]
+  end
+  DB <--> Engine
+  CLAIM --> W[Worker pool<br/>lease + heartbeat]
+  W --> AG[Agents<br/>content only]
+  AG --> R[Model router<br/>route · fallback · circuit breaker<br/>quota · price · budget]
+  R --> P[Gemini · Claude · OpenAI · Ollama · Fake]
+  AG --> T[Tools - Part 9<br/>journal · approvals · taint · SSRF guard]
 ```
-- Fallback to the next entry on overload, exhausted quota, unknown model and timeouts. Never on bad
-  output (after one repair) or bad keys (logged as an ERROR: fix the key).
-- A provider without a key, or an Ollama that is not running, is skipped with a warning; a role with
-  no usable entry stops the app at startup with a clear message.
-- `LLM_PROVIDER=fake` routes everything to canned answers (tests, demos).
 
-**Prices (`config/pricing.yaml`).** USD per 1M input/output tokens per `provider:model`. Verify them
-against each provider's pricing page. Ollama and fake cost $0; an unknown model is recorded with
-cost `null` (never guessed) and one warning.
+A request to result, in short:
+1. `POST /workflows {goal, run: true}` stores the workflow and returns at once (202).
+2. The engine plans it in the background. The planner's plan is validated by code (`app/core/dag.py`).
+3. Every tick the scheduler promotes tasks whose dependencies are done, pauses for budgets, requests
+   approvals and completes or fails the workflow, each step in its own short transaction.
+4. Workers claim ready tasks with a lease and run the agent; no database transaction is open while
+   the model thinks. The result is saved only if this worker still owns the task.
 
-**Budgets.** `POST /workflows {..., "budget": {"max_cost_usd": 0.5, "max_tokens": 200000,
-"max_llm_calls": 30, "max_duration_seconds": 600}}` (all optional; `DEFAULT_MAX_LLM_CALLS=50` is a
-safety net). When a limit is reached the workflow is **paused, not failed**: work in flight finishes,
-nothing new starts, and `workflow.budget_exceeded` says which limit. A call whose estimated cost
-would cross `max_cost_usd` is stopped before it is made. Raise the limit with
-`PATCH /workflows/{id}/budget {"actor": "...", "budget": {...}}`, then resume. Planner calls count.
-`GET /workflows/{id}` shows `budget`, `usage` and `remaining`.
+More detail, including the state diagrams for workflows and tasks: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-**Quotas.** Every real call is counted per provider:model in the database (atomically, failed calls
-included), so daily limits survive restarts and multiple engines. A used-up entry, or one the
-provider reported as out of quota, is skipped until its window resets at midnight in its timezone.
+## Key design decisions and trade-offs
 
-**See it.** `GET /providers` (keys shown only as present/absent, circuit state, today's usage vs
-quota), `GET /metrics/summary` (calls, errors, latency and cost per provider), the timeline's cost by
-provider and fallback count, and the dashboard's budget meters and Providers panel.
-`python scripts/budget_demo.py` shows a budget pause, PATCH and resume end to end (fake LLM).
+| Decision | Why | What it costs |
+|---|---|---|
+| **PostgreSQL is the queue and the source of truth** (`SKIP LOCKED` claims, no Redis/Kafka) | One system to run; every state change and its event commit together, so recovery is just "read the database". | Throughput is bounded by one database (fine for AI workflows, where each step takes seconds; not built for thousands of tasks per second). |
+| **The engine polls every second** and is woken early by local events | Simple and robust: nothing depends on in-memory state, which is what makes crash recovery trivial. | Up to ~1 s of scheduling latency; cross-process wake-ups (LISTEN/NOTIFY) are planned for Part 14. |
+| **At-least-once task execution + idempotent side effects** (not "exactly-once" AI calls) | A crash can happen after the model answered but before the result was saved, so a step may run again. Anything with an outside effect (publish, email, files) is keyed so a repeat is harmless. | A crashed step may pay for one extra model call. |
+| **Leases + heartbeats + fenced saves** (status, lease owner and attempt number must match) | A slow "zombie" worker can never overwrite a newer attempt or a cancelled task. | A little more bookkeeping on every save. |
+| **Single-node recovery by default** (`ENGINE_SINGLE_NODE=true`): on startup every RUNNING task is an orphan | Instant recovery for the common one-process deployment. | Two single-node engines on the same database would steal each other's work; multi-node mode waits for lease expiry instead. |
+| **The AI proposes, code validates** (plans, tool calls, citations) | Wrong or malicious model output becomes a clear error or a human decision, never an unchecked action. | Extra repair round-trips when a model ignores the rules (bounded: 2 plan repairs). |
+| **Budgets pause instead of failing** | Hitting a cost limit is a human decision ("is it worth more?"), and finished work is kept. | A paused workflow needs a person to act. |
+| **Structured JSON "action protocol" for tools** instead of each provider's native function calling | One loop works the same on Gemini, Claude, OpenAI, Ollama and the fake model, and every call goes through the same router, budget and journal. | Slightly more prompt text; native function calling is listed as future work. |
+| **One process runs the API and the engine** | Easy to run and demo. | Scaling out the workers separately is Part 14. |
+
+## How failures are handled
+
+| Failure | What happens |
+|---|---|
+| Timeout, rate limit (per minute), 5xx, overloaded model | Retried with exponential backoff and full jitter; `retry-after` is respected. |
+| Model overloaded, out of quota, or not found | The router tries the next `provider:model` in that agent's route (circuit breaker per model). |
+| Bad API key, refusal, permanent error, rejected approval | Not retried; the task fails with a clear `error_type`. |
+| Invalid model output | One automatic repair request with the exact validation error; then the retry policy. |
+| Process crash or killed worker | Restart reclaims RUNNING tasks as `worker_lost` and retries them; finished tasks are never re-run; interrupted planning is re-planned. |
+| Worker stops heartbeating | Its lease expires, the reaper reclaims the task, and the old worker's late result is discarded. |
+| Budget reached | The workflow pauses (in-flight steps finish, nothing new starts) until a human raises the limit. |
+| Repeat of a side effect after a crash | The publisher (and in Part 9 email, webhooks and files) is idempotent: it happens once. |
+
+For testing this on purpose, `POST /dev/chaos` (development only) can crash the process, raise
+transient, overloaded or permanent errors, or hang a chosen task.
+
+## Tests
+
+```bash
+pytest                       # 550+ tests on a real Postgres test database; fake AI, no network, no cost
+pytest -m live_ollama -s     # free: real local model through Ollama
+pytest -m live_gemini -s     # one small real Gemini call (live_anthropic / live_openai with keys)
+```
+The suite rebuilds its schema from the Alembic migrations (downgrade, then upgrade) and fails if the
+models drift from them. Failure-path tests cover crashes mid-task and mid-planning, two engines racing
+on one database, lease loss, retries and backoff, overloaded and out-of-quota providers, budget pauses,
+rejected and expired approvals, cancellation while running, malicious URLs (SSRF), SQL that tries to
+write, and duplicate side effects after a crash.
+
+## Limitations and what's not done yet
+
+Honest status as of 2026-11-26:
+- **Part 9 (tools and safe actions) is in progress** on the `part9-tools` branch. Built and tested:
+  the tool framework, the 8 tools, the crash-safe journal, the tool loop and per-call approvals.
+  Still to do: taint propagation across tasks, prompt-injection flags, source verification, the new
+  communicator agent, dashboard views for tool calls, the tools demo and the docs.
+- **No user accounts yet.** The history is shared by everyone using the server, and control actions
+  are protected by one admin password (`ADMIN_API_KEY`). Users, roles and policies are Part 11.
+- **Free web search is best-effort.** Without a Tavily key the researcher uses free metasearch, which
+  can be throttled or return thin results. Gemini's own Google Search grounding needs billing.
+- **Small local models are weak at planning and writing.** `llama3.2:3b` researches well enough but
+  writes poorly and sometimes makes invalid plans; route the planner and writer to a stronger model.
+- **The Anthropic and OpenAI adapters are unit-tested only** (no keys were available for live tests).
+- **Free Gemini quota is small** (about 20 requests a day on the main model).
+- **Scale is not load-tested.** Designed for one process; running several engines needs
+  `ENGINE_SINGLE_NODE=false`, and a load test is Part 14.
+- **No feedback loops or re-planning** yet (Part 10), and no code-execution tool.
+- **Voice input** is shown in the dashboard but not built yet.
+- **No CI pipeline** is set up on GitHub yet; tests run locally.
+
+## Roadmap
+
+| Part | Status |
+|---|---|
+| 1-7: foundation, agents, planning, execution engine, reliability, human controls, observability | Done |
+| 8: multi-provider AI and cost control | Done |
+| 9: tools and safe actions (web, HTTP APIs, SQL, files, email, webhooks; crash-safe journal, approvals, taint tracking) | In progress |
+| 10: adaptive workflows (feedback loops, conditional branches, bounded re-planning) | Planned |
+| 11: policy engine, users and roles, multiple approvers | Planned |
+| 12: tamper-evident audit trail, reproducibility, PII redaction | Planned |
+| 13: quality engine (evals, quality gates, replay) | Planned |
+| 14: real-time updates and scale (SSE, LISTEN/NOTIFY, multiple workers, load test) | Planned |
+| 15: developer experience (YAML templates, Python SDK, plugins) | Planned |
 
 ## API
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/health` | Liveness + DB check |
-| POST | `/ask` | Quick Ask: `{question}` → live-web answer with `[n]` citations, sources, timings |
-| POST | `/workflows` | Create. `run: true` → 202, planned and run in the background. Or pass `tasks` yourself |
-| GET | `/workflows`, `/workflows/{id}` | List / detail (tasks, progress, `pending_approvals`, allowed `controls`) |
-| POST | `/workflows/{id}/start` | Run a PENDING workflow that has tasks |
-| POST | `/workflows/{id}/pause` · `/resume` · `/cancel` · `/retry` 🔑 | Human controls (`actor`, `reason`, pause `mode`) |
-| GET | `/workflows/{id}/result` | Final outputs once COMPLETED |
-| GET | `/workflows/{id}/timeline` | Readable timeline, attempt spans, summary (attempts, retries, restarts, tokens) |
-| GET | `/workflows/{id}/events` · `/graph` · `/tasks/{key}` · `/tasks/{key}/attempts` | Raw event log, DAG + Mermaid, task detail, attempt history |
-| GET | `/approvals?status=pending` · `/approvals/{id}` | Approval queue |
-| POST | `/approvals/{id}/approve` · `/reject` 🔑 | Decide (`actor`, `comment`, `input_overrides` / `reason`, `on_reject`) |
+| POST | `/ask` | Quick answer: `{question}` → live-web answer with `[n]` citations (saved to history) |
+| GET | `/history`, `/asks/{id}` | Questions and research, newest first; one saved answer |
+| POST | `/workflows` | Create; `run: true` plans and runs it in the background (202). Optional `budget` |
+| GET | `/workflows`, `/workflows/{id}` | List; detail with tasks, progress, approvals, allowed controls, budget usage |
+| POST | `/workflows/{id}/pause` · `/resume` · `/cancel` · `/retry` 🔑 | Human controls |
+| PATCH | `/workflows/{id}/budget` 🔑 | Change budget limits, then resume |
+| GET | `/workflows/{id}/timeline` · `/events` · `/graph` · `/result` | Readable timeline, raw events, task graph (Mermaid), final result |
+| GET | `/workflows/{id}/tasks/{key}` · `/attempts` | Task detail and attempt history |
+| GET/POST | `/approvals` · `/approvals/{id}/approve` 🔑 · `/reject` 🔑 | Approval queue and decisions |
 | POST | `/plans/preview` | Plan a goal without storing anything |
-| GET | `/agents`, `/engine/status` | Agent catalog, engine state |
-| PATCH | `/workflows/{id}/budget` 🔑 | Raise or change budget limits (then resume) |
-| GET | `/providers`, `/metrics/summary` | Provider status and quotas; LLM cost, latency and errors |
-| GET | `/dashboard` | Web dashboard |
+| GET | `/agents` · `/tools` · `/providers` · `/metrics/summary` · `/engine/status` | Catalogs, provider health, cost and latency |
+| GET | `/dashboard` | The web app |
 
-🔑 requires the `X-API-Key` header when `ADMIN_API_KEY` is set (always set it in production).
-Errors always look like `{"error": {"code": "...", "message": "..."}}`.
+🔑 needs the `X-API-Key` header when `ADMIN_API_KEY` is set (always set it in production). Errors always
+look like `{"error": {"code": "...", "message": "..."}}`.
 
-```powershell
-$h = @{ "X-API-Key" = "my-key" }
-$wf = Invoke-RestMethod -Method Post http://127.0.0.1:8000/workflows -ContentType application/json `
-      -Body '{"name":"EV guide","goal":"Write a short beginner guide on EV adoption in India and publish it","run":true}'
-Invoke-RestMethod "http://127.0.0.1:8000/workflows/$($wf.id)/timeline"
-$a = (Invoke-RestMethod "http://127.0.0.1:8000/approvals?status=pending&workflow_id=$($wf.id)")[0]
-Invoke-RestMethod -Method Post "http://127.0.0.1:8000/approvals/$($a.id)/approve" -Headers $h `
-      -ContentType application/json -Body '{"actor":"me","input_overrides":{"title":"Final title"}}'
-```
+## Configuration
 
-## Configuration (`.env`)
+The most used settings (`.env`; the full list with comments is in [.env.example](.env.example)):
 
 | Setting | Default | Notes |
 |---|---|---|
-| `DATABASE_URL`, `TEST_DATABASE_URL` | local Docker Postgres | Tests only ever touch the `agentflow_test` database |
-| `GEMINI_API_KEY`, `GEMINI_MODEL` | –, `gemini-3.5-flash` | Free tier: about 20 requests/day on this model |
-| `GEMINI_FALLBACK_MODELS` | – | Legacy fallback chain when there is no models.yaml |
-| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | – | Optional; a provider without a key is skipped |
-| `OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Local Ollama (free), used when it is running |
-| `MODELS_CONFIG_PATH`, `PRICING_CONFIG_PATH` | `config/models.yaml`, `config/pricing.yaml` | Routes + quotas, prices |
-| `QUOTA_TIMEZONE` | `UTC` | When daily quota windows reset (per-entry override in models.yaml) |
-| `DEFAULT_MAX_COST_USD`, `DEFAULT_MAX_TOKENS`, `DEFAULT_MAX_LLM_CALLS`, `DEFAULT_MAX_DURATION_SECONDS` | –, –, 50, – | Default workflow budget |
-| `LLM_PROVIDER` | `gemini` | `fake` = canned output, no network (demos, development) |
-| `GEMINI_WORKER_MODEL` | – | Fast model for workers + Quick Ask, e.g. `gemini-3.5-flash-lite` (planner keeps `GEMINI_MODEL`) |
-| `WEB_SEARCH_PROVIDER` | `auto` | Live web research: Tavily if `TAVILY_API_KEY` is set, else free metasearch (no key); `none` = off |
-| `ENABLE_SEARCH_GROUNDING` | `false` | Gemini's built-in Google Search instead (needs billing on the Google key) |
+| `LLM_PROVIDER` | `gemini` | `fake` = demo mode with canned answers |
+| `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | – | A provider without a key is skipped |
+| `OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Local models, used when Ollama is running |
+| `MODELS_CONFIG_PATH` | `config/models.yaml` | Routes per agent role, quotas ([example](config/models.example.yaml)) |
+| `TOOLS_CONFIG_PATH` | `config/tools.yaml` | Tools per agent, allowlists, approvals ([example](config/tools.example.yaml)); no file = no tools |
+| `DEFAULT_MAX_LLM_CALLS` | 50 | Default budget safety net per workflow |
 | `ENGINE_MAX_CONCURRENCY`, `TASK_TIMEOUT_SECONDS` | 4, 180 | Worker pool size, per-task limit |
-| `RETRY_BASE_DELAY_SECONDS`, `RETRY_MAX_DELAY_SECONDS`, `DEFAULT_TASK_MAX_ATTEMPTS` | 2, 60, 3 | Backoff policy |
-| `LEASE_DURATION_SECONDS`, `HEARTBEAT_INTERVAL_SECONDS`, `ENGINE_SINGLE_NODE` | 30, 10, true | Crash detection |
-| `ADMIN_API_KEY` | – | Required when `APP_ENV=production` |
-| `APPROVAL_TIMEOUT_HOURS`, `APPROVAL_WEBHOOK_URL` | 24, – | Approval expiry (0 = never), optional notification POST |
-
-The full list with comments is in [.env.example](.env.example).
-
-## Tests
-
-```powershell
-pytest            # ~300 tests against the real agentflow_test Postgres; fake LLM, no network, no cost
-pytest -m live_ollama -s   # free: local Ollama structured call + a 3-task workflow
-pytest -m live_gemini -s   # one small Gemini call (also: live_anthropic, live_openai when keys are set)
-```
-The suite rebuilds the test schema from the Alembic migrations (downgrade → upgrade), truncates
-tables between tests and fails if the models drift from the migrations. Engine tests drive the real
-scheduler with a scripted fake LLM (errors, hangs, delays per task), including two engines racing on
-the same DB and simulated crashes.
-
-> `agentflow_test` is created by `docker/postgres-init/` only on the volume's first start. If it is
-> missing: `docker compose exec postgres createdb -U agentflow agentflow_test`.
+| `ADMIN_API_KEY` | – | Admin password for control actions; required in production |
+| `TAVILY_API_KEY` | – | Optional, more reliable web search (free tier) |
 
 ## Project layout
 
 ```
 app/
-  agents/     planner + specialist agents, prompts, registry
-  api/        routes (workflows, approvals, plans, agents, engine, dashboard, dev chaos), auth
-  core/       enums, state machine, DAG rules, events, errors
-  engine/     engine loop, scheduler, worker, retry, recovery, chaos
-  llm/        Gemini client (fallback + circuit breaker), error classes, fake clients
-  models/     SQLAlchemy models    schemas/  Pydantic models    services/  business logic
-  static/     dashboard.html
-alembic/      migrations 0001-0004
-scripts/      crash_demo.py, controls_demo.py, run_workflow.py, list_models.py
-tests/        unit, API, engine, reliability, control and live tests
+  agents/    planner + researcher, analyst, writer, reviewer, publisher
+  engine/    engine loop, scheduler, worker, retry, recovery, chaos (dev)
+  llm/       model router, providers (Gemini, Anthropic, OpenAI, Ollama, fake), pricing, quotas
+  tools/     Part 9: tool framework, SSRF guard, journal, tool loop, the tools
+  services/  workflows, planning, controls, approvals, budgets, history, timeline
+  core/      state machine, DAG rules, events, errors
+  api/       REST routes      models/  SQLAlchemy      schemas/  Pydantic
+  static/    dashboard.html (no build step)
+alembic/     migrations        config/  models, pricing and tools examples
+scripts/     crash, controls and budget demos; sample data setup; model listing
+tests/       550+ tests incl. failure paths; live tests behind markers
 ```
 
-[CLAUDE.md](CLAUDE.md) holds the detailed design notes (state tables, retry policy, approval lifecycle).
+Detailed design notes for contributors: [CLAUDE.md](CLAUDE.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+**Stack:** Python 3.12 · FastAPI · SQLAlchemy 2 (async) + asyncpg · PostgreSQL 16 · Alembic · Pydantic v2 · pytest.
