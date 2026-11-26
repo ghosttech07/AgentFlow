@@ -29,6 +29,7 @@ class FakeScript:
     delay: float = 0.0
     response: dict[str, Any] | None = None
     times: int | None = None
+    steps: list[dict[str, Any]] | None = None  # Part 9: successive tool-loop steps for this task
 
 
 class FakeLLMClient:
@@ -86,6 +87,18 @@ class FakeLLMClient:
             raise script.error
         if self.error is not None:
             raise self.error
+        agent_output = getattr(output_model, "__agent_output__", None)
+        if agent_output is not None:  # a tool-loop step (Part 9)
+            steps = script.steps if script and script.steps is not None else None
+            if steps:
+                payload = steps.pop(0)
+                payload = payload(user_prompt) if callable(payload) else payload
+            else:
+                payload = {"action": "final", "tool": None, "arguments": None, "reason": None,
+                           "output": fake_data(agent_output)}
+            data = output_model.model_validate(payload)
+            return LLMResponse(data=data, raw_text=data.model_dump_json(), model="fake-model",
+                               input_tokens=len(user_prompt) // 4, output_tokens=10, latency_ms=1)
         payload = (
             (script.response if script else None)
             or self.responses.get(output_model)

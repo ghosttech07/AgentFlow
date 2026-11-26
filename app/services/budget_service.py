@@ -33,7 +33,7 @@ UNFINISHED = (TaskStatus.PENDING, TaskStatus.READY, TaskStatus.RUNNING, TaskStat
 
 logger = logging.getLogger(__name__)
 
-LIMITS = ("max_llm_calls", "max_tokens", "max_cost_usd", "max_duration_seconds")  # check order
+LIMITS = ("max_llm_calls", "max_tokens", "max_cost_usd", "max_duration_seconds", "max_tool_calls")  # check order
 PAUSABLE = (WorkflowStatus.RUNNING, WorkflowStatus.AWAITING_APPROVAL)
 
 
@@ -45,6 +45,7 @@ class Usage:
     cost_usd: float = 0.0
     unpriced_calls: int = 0  # calls whose price is unknown (cost null): max_cost_usd cannot see them
     duration_seconds: float | None = None
+    tool_calls: int = 0  # Part 9: executed tool calls (journal rows that ran; reuses don't count)
 
     @property
     def tokens(self) -> int:
@@ -57,7 +58,7 @@ class Usage:
 def effective_budget(budget: dict[str, Any] | None, settings: Settings) -> dict[str, Any]:
     eff: dict[str, Any] = {"max_cost_usd": settings.default_max_cost_usd, "max_tokens": settings.default_max_tokens,
                            "max_llm_calls": settings.default_max_llm_calls,
-                           "max_duration_seconds": settings.default_max_duration_seconds}
+                           "max_duration_seconds": settings.default_max_duration_seconds, "max_tool_calls": None}
     eff.update(budget or {})  # an explicit null in the workflow budget means unlimited
     return eff
 
@@ -70,14 +71,17 @@ async def get_usage(session: AsyncSession, wf: Workflow, now: datetime | None = 
         .where(LLMCall.workflow_id == wf.id)
     )).one()
     duration = round(((now or utcnow()) - wf.started_at).total_seconds(), 2) if wf.started_at else None
+    from app.tools.journal import executed_tool_calls
+
     return Usage(llm_calls=row[0], input_tokens=int(row[1]), output_tokens=int(row[2]), cost_usd=float(row[3]),
-                 unpriced_calls=row[4], duration_seconds=duration)
+                 unpriced_calls=row[4], duration_seconds=duration,
+                 tool_calls=await executed_tool_calls(session, wf.id))
 
 
 def exceeded(eff: dict[str, Any], usage: Usage) -> str | None:
     """The first limit reached (>=), or None."""
     used = {"max_llm_calls": usage.llm_calls, "max_tokens": usage.tokens, "max_cost_usd": usage.cost_usd,
-            "max_duration_seconds": usage.duration_seconds}
+            "max_duration_seconds": usage.duration_seconds, "max_tool_calls": usage.tool_calls}
     for limit in LIMITS:
         if eff.get(limit) is not None and used[limit] is not None and used[limit] >= eff[limit]:
             return limit
@@ -87,7 +91,8 @@ def exceeded(eff: dict[str, Any], usage: Usage) -> str | None:
 def remaining(eff: dict[str, Any], usage: Usage) -> dict[str, Any]:
     pairs = {"llm_calls": ("max_llm_calls", usage.llm_calls), "tokens": ("max_tokens", usage.tokens),
              "cost_usd": ("max_cost_usd", usage.cost_usd),
-             "duration_seconds": ("max_duration_seconds", usage.duration_seconds or 0.0)}
+             "duration_seconds": ("max_duration_seconds", usage.duration_seconds or 0.0),
+             "tool_calls": ("max_tool_calls", usage.tool_calls)}
     return {name: (None if eff.get(limit) is None else max(0, round(eff[limit] - used, 6)))
             for name, (limit, used) in pairs.items()}
 
@@ -106,13 +111,40 @@ async def pause_locked(session: AsyncSession, wf: Workflow, limit: str, usage: U
     if wf.status not in PAUSABLE:
         return False  # e.g. PLANNING: the scheduler pauses it as soon as it runs
     await transition_workflow(session, wf, WorkflowStatus.PAUSED, event_type=EventType.WORKFLOW_PAUSED,
-                              reason=f"budget_exceeded: {limit}", extra={"mode": "graceful", "actor": "budget"})
+                              reason=await _pause_reason(session, wf, limit, eff),
+                              extra={"mode": "graceful", "actor": "budget"})
     record_event(session, workflow_id=wf.id, event_type=EventType.WORKFLOW_BUDGET_EXCEEDED,
                  payload={"limit": limit, "estimated": estimated, "usage": usage.as_dict(),
                           "budget": {k: eff.get(k) for k in LIMITS}})
     logger.warning("workflow.budget_exceeded id=%s limit=%s estimated=%s usage=%s", wf.id, limit, estimated,
                    usage.as_dict())
     return True
+
+
+async def _pause_reason(session: AsyncSession, wf: Workflow, limit: str, eff: dict[str, Any]) -> str:
+    """The default LLM-call limit is easy to hit with tool loops: say so, and say how to continue."""
+    if limit == "max_llm_calls" and "max_llm_calls" not in (wf.budget or {}) and await _is_tool_workflow(session, wf):
+        return (f"budget_exceeded: default max_llm_calls={eff['max_llm_calls']} reached (tool workflow); "
+                f"raise the budget with PATCH /workflows/{wf.id}/budget and resume")
+    return f"budget_exceeded: {limit}"
+
+
+async def _is_tool_workflow(session: AsyncSession, wf: Workflow) -> bool:
+    from app.agents import get_agent_class
+    from app.tools import config as tools_config
+
+    cfg = tools_config.get_tools_config()
+    if cfg is None:
+        return False
+    types = set(await session.scalars(select(Task.agent_type).where(Task.workflow_id == wf.id)))
+    for agent_type in types:
+        try:
+            cls = get_agent_class(agent_type)
+        except Exception:
+            continue
+        if tools_config.effective_tools(agent_type, cls.allowed_tools, cfg):
+            return True
+    return False
 
 
 async def pause_for_budget(sf: async_sessionmaker[AsyncSession], workflow_id: uuid.UUID, limit: str,

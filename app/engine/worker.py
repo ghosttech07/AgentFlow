@@ -7,6 +7,8 @@ Rules:
   cancel the agent call and discard its result.
 - Idempotency guard: every save is conditional on the same three columns, so a slow "zombie"
   worker can never overwrite a newer attempt (Part 5) or a cancelled task (Part 6).
+- Part 9: when the agent has effective tools the worker builds a ToolRuntime and wires it
+  onto the agent before the call. ToolApprovalNeeded suspends the task (no retry consumed).
 """
 
 from __future__ import annotations
@@ -15,9 +17,11 @@ import asyncio
 import logging
 import uuid
 from datetime import timedelta
+from typing import Any
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm import selectinload
 
 from app.agents import AgentInput, AgentResult, create_agent
 from app.config import Settings
@@ -68,7 +72,8 @@ async def execute_task(
     logger.info("task.running key=%s agent=%s attempt=%d", key, agent_type, claim.attempt)
     with use_context(CallContext(workflow_id, claim.task_id)):  # inherited by the agent's asyncio task
         agent_call = asyncio.create_task(
-            _run_agent(agent_type, agent_input, llm, session_factory, workflow_id, key, settings, has_chaos),
+            _run_agent(agent_type, agent_input, llm, session_factory, workflow_id, key, settings, has_chaos,
+                       claim.task_id),
             name=f"agent-{key}",
         )
     lease_lost = asyncio.Event()
@@ -90,7 +95,7 @@ async def execute_task(
         error_type = classify_failure(exc)
         message = getattr(exc, "message", None) or str(exc) or type(exc).__name__
         if error_type == "timeout":
-            message = f"Task timed out after {settings.task_timeout_seconds:g}s"
+            message = f"Task timed out after {_task_timeout(agent_type, settings):g}s"
         if error_type == "unknown":
             logger.exception("task.unexpected_error key=%s task=%s", key, claim.task_id)
         return await _save(session_factory, claim, worker_id, settings,
@@ -114,15 +119,64 @@ async def _run_agent(
     key: str,
     settings: Settings,
     has_chaos: bool,
+    task_id: uuid.UUID | None = None,
 ) -> AgentResult:
     async def run() -> AgentResult:
         if has_chaos:  # dev fault injection
             await chaos.inject(session_factory, workflow_id, key, settings)
         agent = create_agent(agent_type, llm)
         agent.session_factory = session_factory  # same DB as the engine (publisher side effects)
+        # Part 9: wire a ToolRuntime when the agent has effective tools.
+        if task_id is not None:
+            agent.tool_runtime = await _build_tool_runtime(agent, session_factory, workflow_id, task_id, key,
+                                                           settings)
         return await agent.run(agent_input)
 
-    return await asyncio.wait_for(run(), timeout=settings.task_timeout_seconds)
+    return await asyncio.wait_for(run(), timeout=_task_timeout(agent_type, settings))
+
+
+def _effective_tools(agent_type: str, settings: Settings) -> list[str]:
+    from app.agents import get_agent_class
+    from app.tools import config as tools_config
+
+    cfg = tools_config.get_tools_config()
+    if cfg is None:
+        return []
+    return tools_config.effective_tools(agent_type, get_agent_class(agent_type).allowed_tools, cfg, settings)
+
+
+def _has_tools(agent_type: str, settings: Settings) -> bool:
+    return bool(_effective_tools(agent_type, settings))
+
+
+def _task_timeout(agent_type: str, settings: Settings) -> float:
+    """A tool loop makes several model + tool calls: it gets TOOL_LOOP_TIMEOUT_SECONDS (a suspension ends the
+    attempt, so time waiting for an approval never counts; a resume starts fresh timers)."""
+    return settings.tool_loop_timeout_seconds if _has_tools(agent_type, settings) else settings.task_timeout_seconds
+
+
+async def _build_tool_runtime(agent: Any, session_factory: async_sessionmaker[AsyncSession],
+                              workflow_id: uuid.UUID, task_id: uuid.UUID, key: str, settings: Settings) -> Any:
+    """ToolRuntime for an agent with effective tools (None otherwise): the running attempt number, upstream
+    taint and the transcript of earlier attempts to resume from (all read from the DB)."""
+    import app.tools.catalog  # noqa: F401  (registers every tool)
+    from app.models.attempt import TaskAttempt
+    from app.tools import config as tools_config
+    from app.tools.loop import ToolRuntime, resume_info
+
+    tools = _effective_tools(agent.agent_type, settings)
+    if not tools:
+        return None
+    async with session_factory() as session:
+        attempt_number = await session.scalar(
+            select(TaskAttempt.attempt_number).where(TaskAttempt.task_id == task_id)
+            .order_by(TaskAttempt.attempt_number.desc()).limit(1)) or 1
+        task = await session.scalar(select(Task).where(Task.id == task_id).options(selectinload(Task.dependencies)))
+        tainted_from = sorted(d.key for d in (task.dependencies if task else []) if d.tainted)
+        resume = await resume_info(session, task_id, attempt_number)
+    return ToolRuntime(session_factory=session_factory, config=tools_config.get_tools_config(), settings=settings,
+                       workflow_id=workflow_id, task_id=task_id, task_key=key, attempt_number=attempt_number,
+                       tools=tools, tainted_from=tainted_from, resume=resume)
 
 
 async def _heartbeat(
@@ -183,6 +237,7 @@ async def _save(
             task.lease_expires_at = None
             task.output = result.output
             task.metrics = task_metrics(result)
+            task.tainted = bool(getattr(result, "tainted", False))
             task.error = task.error_type = None
             await close_attempt(session, task.id, outcome="succeeded", model=result.model,
                                 input_tokens=result.input_tokens, output_tokens=result.output_tokens,

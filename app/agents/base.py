@@ -34,6 +34,8 @@ class AgentResult(BaseModel):
     cost_usd: float | None = None
     fallback_from: str | None = None
     route_position: int = 0
+    tool_summary: dict[str, Any] | None = None  # Part 9: tool loop report (steps, calls, reused, taint)
+    tainted: bool = False  # the attempt read untrusted content (downstream tasks start tainted)
 
 
 class BaseAgent(ABC):
@@ -48,12 +50,16 @@ class BaseAgent(ABC):
     sensitive: ClassVar[bool] = False
     # Explicit Gemini thinking level; None = WORKER_THINKING_LEVEL from config.
     thinking_level: ClassVar[str | None] = None
+    # Part 9: tools this agent may use (intersected with config/tools.yaml; the config wins).
+    allowed_tools: ClassVar[tuple[str, ...]] = ()
 
     def __init__(self, llm: LLMClient) -> None:
         self.llm = llm
         self.settings = get_settings()
         # Set by the engine worker; only side-effect agents (publisher) use it. Content agents never do.
         self.session_factory: Any = None
+        # Set by the worker when the agent has effective tools (Part 9); None = the classic single call.
+        self.tool_runtime: Any = None
 
     def build_system_prompt(self) -> str:
         """Override for prompts that depend on runtime state (e.g. the planner's agent catalog)."""
@@ -80,7 +86,25 @@ class BaseAgent(ABC):
         """Hook for code-enforced fixes to model output (code decides control)."""
         return data
 
+    def postprocess_tools(self, data: BaseModel, report: Any) -> BaseModel:
+        """Hook for code-enforced fixes after a tool loop (e.g. researcher source verification)."""
+        return data
+
+    async def _run_tools(self, agent_input: AgentInput) -> AgentResult:
+        from app.tools.loop import run_tool_loop
+
+        data, report = await run_tool_loop(self, agent_input, self.tool_runtime)
+        data = self.postprocess_tools(data, report)
+        return AgentResult(
+            agent_type=self.agent_type, output=data.model_dump(mode="json"), model=report.model,
+            input_tokens=report.input_tokens, output_tokens=report.output_tokens, latency_ms=report.latency_ms,
+            provider=report.provider or "unknown", cost_usd=report.cost_usd, fallback_from=report.fallback_from,
+            route_position=report.route_position, tool_summary=report.summary(), tainted=report.tainted,
+        )
+
     async def run(self, agent_input: AgentInput) -> AgentResult:
+        if self.tool_runtime is not None and self.tool_runtime.tools:
+            return await self._run_tools(agent_input)
         response = await self.llm.generate_structured(
             system_prompt=self.build_system_prompt(),
             user_prompt=self.build_user_prompt(agent_input),

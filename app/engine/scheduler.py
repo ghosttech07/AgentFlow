@@ -330,4 +330,5 @@ def task_metrics(result: Any) -> dict[str, Any]:
         "output_tokens": result.output_tokens,
         "latency_ms": result.latency_ms,
         "sources": [s.model_dump() for s in result.sources],
+        **({"tools": result.tool_summary} if getattr(result, "tool_summary", None) else {}),
     }
