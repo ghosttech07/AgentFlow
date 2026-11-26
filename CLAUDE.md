@@ -102,8 +102,10 @@ app/
   services/             workflow_service.py (CRUD, graph), planning_service.py (plan + repair + persist),
                         control_service.py (pause/resume/cancel), approval_service.py, notify.py (webhook),
                         timeline_service.py (Part 7)
-  llm/                  base.py (LLMClient protocol, LLMResponse, Source), gemini_client.py,
-                        fake_client.py (tests), errors.py; get_llm_client() singleton in __init__
+  llm/                  base.py (LLMClient protocol, LLMResponse, Source), router.py (ModelRouter),
+                        routes.py (models.yaml), pricing.py, quota.py, context.py, circuit.py,
+                        providers/ (gemini, anthropic, openai, ollama, fake, registry), gemini_client.py
+                        (legacy), fake_client.py (tests), errors.py; get_llm_client() -> router
   agents/               base.py (BaseAgent, AgentInput, AgentResult), registry.py, prompts.py,
                         researcher.py, analyst.py, writer.py, reviewer.py, planner.py
   engine/               engine.py (Engine loop), scheduler.py (promote/gate/finish/claim/reap),
@@ -114,6 +116,10 @@ scripts/list_models.py  Lists Gemini models usable with your key (generateConten
 scripts/run_workflow.py Demo: run a goal end to end against the running server, live table
 scripts/crash_demo.py   Part 5 demo: crash the server mid-task, restart, verify recovery
 scripts/controls_demo.py Part 6 demo: pause/resume, approve, reject, cancel (fake LLM)
+scripts/budget_demo.py  Part 8 demo: budget pause -> PATCH -> resume -> COMPLETED (fake LLM)
+scripts/list_provider_models.py  provider:model entries available to your keys / local Ollama
+config/                 models.example.yaml (routes + quotas), pricing.yaml (USD per 1M tokens)
+docs/ARCHITECTURE.md    architecture diagram incl. the router
 alembic/                async env.py + versions/ (0001 initial schema, 0002 engine fields)
 docker/postgres-init/   SQL run on first DB init (creates agentflow_test)
 tests/                  conftest.py + API, state machine, health, migration-drift tests
@@ -503,6 +509,100 @@ Migration 0004: `approvals`, `publications`.
   search_provider, timings_ms, warnings}. Stateless (no DB rows). Dashboard: Ask panel on top;
   [n] / [1, 4] citations link to sources.
 
+## Multi-provider AI + cost control (Part 8)
+**Code chooses the provider, falls back across providers, prices every call, enforces budgets and
+quotas. The LLM never decides any of it. Only GEMINI_API_KEY + no models.yaml = v1 behaviour.**
+
+### Providers (`app/llm/providers/`)
+Each adapter makes ONE call to ONE model and maps errors into the taxonomy; no fallback inside.
+- `gemini.py`: the v1 per-model Gemini logic moved unchanged (`GeminiProvider`); `gemini_client.py`
+  keeps the legacy `GeminiClient` (fallback loop) as a wrapper for old imports/tests.
+- `anthropic_provider.py`: `messages.parse(output_format=Model)` (native structured output, anthropic
+  2.14), thinking_level -> `output_config.effort` (low/medium/high); refusal -> permanent;
+  `OverloadedError` -> overloaded; spend-limit classes -> quota_exhausted; 429 -> transient + retry-after.
+- `openai_provider.py` (`OpenAICompatProvider`): `chat.completions.parse(response_format=Model)` (strict
+  JSON schema, openai 3.59), thinking -> `reasoning_effort`, dropped per model after a 400 ("reasoning_effort"
+  or Ollama's "does not support thinking"). `insufficient_quota` -> quota_exhausted.
+- `ollama_provider.py`: the same adapter on Ollama's OpenAI-compatible `/v1` (OLLAMA_BASE_URL). Chosen
+  because it honours `response_format` JSON schemas on Ollama 0.40 (verified live) and shares one
+  adapter with OpenAI. Registered only if `GET /v1/models` answers within 2 s at startup.
+- `fake_provider.py`: LLM_PROVIDER=fake behind the router (usage rows + budgets work in demos).
+- `base.py`: `status_error()` HTTP->taxonomy table, `parse_json`, `repair_prompt` (one repair each).
+- `registry.build_providers`: a provider without a key is not registered (one INFO line, no key logged).
+- Error taxonomy additions: `LLMAuthError` (401/403/bad key; permanent, never falls back, ERROR log),
+  `LLMTimeoutError` (error_type `timeout`, falls back), `BudgetPause` (control signal, not an error).
+
+### Routing (`app/llm/routes.py`, `app/llm/router.py`, `config/models.yaml`)
+- `routes: {default: [...], planner|researcher|analyst|writer|reviewer|ask: [...]}`, entries
+  `provider:model` (first `:` splits, so `ollama:qwen3:4b` works); `quotas: {entry: {requests_per_day,
+  requests_per_minute, timezone}}`. Validated at startup (`RouteConfigError`: bad YAML, unknown provider,
+  bad entry, empty route, missing default, no usable entry for a role). Unconfigured providers' entries
+  are skipped with a WARNING. No file -> `legacy_routes` (GEMINI_MODEL + fallbacks; worker roles start with
+  GEMINI_WORKER_MODEL), unfiltered so a keyless setup fails at call time exactly like v1.
+- `get_llm_client()` returns a lazily started `ModelRouter`; the lifespan calls `ensure_started()` so a bad
+  models.yaml stops the app. Agents pass `role=self.agent_type` (Quick Ask: `ask`).
+- Router per call: skip open circuits (breaker keyed by provider:model) -> budget pre-checks -> atomic quota
+  reserve -> adapter. Fallback on overloaded, quota_exhausted (marks the window exhausted), model-not-found,
+  timeout; stop on output/auth/plain transient (task retry policy handles transient). Every real call ->
+  one `llm_calls` row. All fail -> overloaded if any overloaded, else the last error. Response carries
+  provider, model, cost_usd, route_position, fallback_from (= the route's first entry).
+- `scripts/list_provider_models.py` lists `provider:model` for every configured provider (free).
+  `config/models.example.yaml`: (a) gemini-only, (b) free dev (Ollama first), (c) best quality
+  (cross-provider; Anthropic/OpenAI lines are placeholders without keys) + the recommended active profile.
+
+### Cost, budgets, quotas
+- `config/pricing.yaml` -> `Pricing.cost(entry, in, out)` per 1M tokens; ollama/fake = 0; unknown -> None + one
+  WARNING. Cost lands in llm_calls, task metrics (`provider, cost_usd, fallback_from, route_position`) and
+  `task_attempts` (`provider`, `cost_usd`).
+- Totals = SQL sums over `llm_calls` per workflow (single source of truth incl. planner, repairs, failed
+  calls; no counters to drift). `budget_service`: `effective_budget` (workflow.budget over DEFAULT_MAX_*,
+  explicit null = unlimited), `get_usage`, `exceeded` (>=; order calls, tokens, cost, duration), `remaining`.
+- A reached limit PAUSES (never fails): `pause_locked` = graceful pause (actor "budget", reason
+  "budget_exceeded: <limit>") + `workflow.budget_exceeded` {limit, estimated, usage, budget}. Where: the
+  scheduler (before promote/claim, incl. max_duration), the router after every call, and before a task's
+  call (already reached, or the pre-call estimate: prompt chars/4 + the role's average output tokens or
+  DEFAULT_ESTIMATED_OUTPUT_TOKENS, priced, would cross max_cost_usd) -> `BudgetPause` -> the worker returns
+  the task to READY (attempt outcome `budget_paused`, max_attempts += 1, no retry used). Planner calls are
+  counted but never blocked (a PLANNING workflow can't pause; the scheduler pauses it once RUNNING).
+- `PATCH /workflows/{id}/budget {actor, budget}` merges limits, event `workflow.budget_updated` {actor,
+  from, to}; then resume as usual. `POST /workflows` accepts `budget`; detail adds `effective_budget`,
+  `usage`, `remaining`.
+- `llm/quota.py`: `provider_usage` rows per (provider, model, day|minute, window_start); `try_reserve` is one
+  `INSERT ... ON CONFLICT DO UPDATE ... WHERE count < limit AND NOT exhausted RETURNING` (exact under
+  concurrent engines); day windows start at local midnight of the entry timezone (QUOTA_TIMEZONE default
+  UTC; Google = America/Los_Angeles); `mark_exhausted` on a provider quota error; blocked windows logged once.
+
+### API, dashboard, timeline
+`GET /providers` (configured, key_present only, entries with circuit + today's usage vs quota, routes),
+`GET /metrics/summary` (totals incl. unpriced calls and fallbacks; per provider and per entry: calls,
+errors, error_rate, avg latency, cost). Timeline summary adds llm_calls, fallbacks, cost_by_provider
+(null when a success was unpriced), cost_usd; spans carry fallback_from and per-attempt provider/cost;
+`describe()` covers budget events and "via provider:model, fallback from X". Dashboard redesigned
+("reference desk": oak bar, manila index cards with a catalog-red rule, typewriter face for data only,
+self-hosted fonts under /static/fonts): Quick Ask first with "see also" source tracings and `?q=` deep
+link; budget meters, budget-paused banner with an adjust form; Providers panel; provider:model and
+fallbacks per task/attempt; regions refresh without losing focus or scroll. Design record:
+PRODUCT.md, `.impeccable/surfaces/app-static-dashboard-html.md`.
+
+### Live findings (2026-11-26)
+- Ollama 0.40.18 installed (winget), models `llama3.2:3b` (2.0 GB, ~5-10 s per call on the RTX 3050 6 GB)
+  and `qwen3:4b` (2.5 GB; thinks by default: 70 s with effort low, >120 s timeout without it).
+- llama3.2:3b is NOT a reliable planner: it returned a 4-task plan three times for max_tasks=3 (rejected by
+  validation). Route the planner to Gemini (or qwen3:4b when offline). Workers on llama3.2:3b work.
+- Free metasearch + Quick Ask verified live; Gemini Google-Search grounding still needs billing.
+
+### Demos
+`python scripts/budget_demo.py` (fake): max_llm_calls=3 -> PAUSED at 3 calls -> PATCH 10 -> resume ->
+COMPLETED at 6 calls, $0. crash_demo --fake and controls_demo still PASS.
+
+### Config
+`ANTHROPIC_API_KEY`, `OPENAI_API_KEY` (optional), `OLLAMA_BASE_URL` (http://localhost:11434/v1),
+`LLM_TIMEOUT_SECONDS` (120), `MODELS_CONFIG_PATH` (config/models.yaml), `PRICING_CONFIG_PATH`
+(config/pricing.yaml), `QUOTA_TIMEZONE` (UTC), `DEFAULT_MAX_COST_USD|TOKENS|DURATION_SECONDS` (none),
+`DEFAULT_MAX_LLM_CALLS` (50), `DEFAULT_ESTIMATED_OUTPUT_TOKENS` (1500). Migration 0005: `llm_calls`,
+`provider_usage`, `workflows.budget`, `task_attempts.provider|cost_usd`. Live markers: `live_gemini`,
+`live_anthropic`, `live_openai`, `live_ollama` (all also `live`, excluded by default).
+
 ## Coding conventions
 - **Async everywhere** (routes, services, DB access). No sync DB calls in app code.
 - **Thin routes**: parse/validate → call a service → convert to schema. No logic in routes.
@@ -533,4 +633,7 @@ python scripts/list_models.py              # models available to your key
 python scripts/run_workflow.py "<goal>"    # demo: run a goal end to end (server must be running)
 python scripts/crash_demo.py --fake           # Part 5: crash + restart + recovery (fake LLM)
 python scripts/controls_demo.py             # Part 6: pause/resume, approve, reject, cancel (fake LLM)
+python scripts/budget_demo.py               # Part 8: budget pause + PATCH + resume (fake LLM)
+python scripts/list_provider_models.py      # Part 8: models your keys / local Ollama offer
+pytest -m live_ollama -s                    # Part 8: free local-model live tests
 ```

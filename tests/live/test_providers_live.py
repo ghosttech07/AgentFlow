@@ -23,6 +23,7 @@ from app.llm.router import ModelRouter
 from app.llm.routes import RouteConfig
 
 OLLAMA_MODEL = "llama3.2:3b"  # fast on a 6 GB laptop GPU; qwen3:4b thinks for 1-2 min per call
+PLANNER_MODEL = "qwen3:4b"
 
 
 class Capital(BaseModel):
@@ -100,7 +101,10 @@ async def test_live_ollama_full_workflow(app: FastAPI, client: AsyncClient, make
 
     settings = get_settings()
     router = ModelRouter(providers={"ollama": make_ollama(settings)},
-                         routes=RouteConfig(routes={"default": [f"ollama:{OLLAMA_MODEL}"]}), pricing=Pricing({}),
+                         # 3B models break the plan's size limit (seen live); the 4B reasoning model plans.
+                         routes=RouteConfig(routes={"default": [f"ollama:{OLLAMA_MODEL}"],
+                                                    "planner": [f"ollama:{PLANNER_MODEL}", f"ollama:{OLLAMA_MODEL}"]}),
+                         pricing=Pricing({}),
                          settings=settings, session_factory=session_factory, breaker=CircuitBreaker(3, 60))
     app.dependency_overrides[get_llm_client] = lambda: router
     resp = await client.post("/workflows", json={
