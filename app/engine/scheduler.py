@@ -20,9 +20,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
 from app.config import Settings, get_settings
+from app.core.conditions import ConditionError, ConditionSyntaxError, parse_condition
 from app.core.dag import TaskNode, leaves
 from app.core.enums import TaskStatus, WorkflowStatus
-from app.core.events import EventType
+from app.core.events import EventType, record_event
+from app.core.joins import TOLERANT_JOINS, decide
 from app.core.state_machine import transition_task, transition_workflow
 from app.db.base import utcnow
 from app.engine.retry import open_attempt, reclaim_lost_task
@@ -35,7 +37,7 @@ from app.services.workflow_service import start_workflow_locked
 
 logger = logging.getLogger(__name__)
 
-DONE_OK = frozenset({TaskStatus.SUCCEEDED, TaskStatus.SKIPPED})
+DONE_OK = frozenset({TaskStatus.SUCCEEDED, TaskStatus.SKIPPED, TaskStatus.SUPERSEDED})
 # Workflows the scheduler works on. PAUSED is deliberately absent: nothing is promoted, gated or
 # claimed while paused (the reaper still runs).
 SCHEDULED = (WorkflowStatus.RUNNING, WorkflowStatus.AWAITING_APPROVAL)
@@ -101,13 +103,12 @@ async def schedule_running_workflows(
 
 def can_progress(tasks: list[Task], now: datetime) -> bool:
     """True if something runs or can run now: READY/RUNNING, a due retry, a promotable PENDING task."""
-    status = {t.id: t.status for t in tasks}
     for t in tasks:
         if t.status in (TaskStatus.READY, TaskStatus.RUNNING):
             return True
         if t.status == TaskStatus.RETRYING and (t.next_attempt_at is None or t.next_attempt_at <= now):
             return True
-        if t.status == TaskStatus.PENDING and all(status[d.id] == TaskStatus.SUCCEEDED for d in t.dependencies):
+        if t.status == TaskStatus.PENDING and decide(t)[0] != "wait":
             return True
     return False
 
@@ -141,7 +142,7 @@ async def schedule_workflow(
 
     # Failure: stop scheduling, but leave PENDING tasks untouched (Part 5 resumes them)
     # and let running siblings finish and save their output.
-    failed = [t for t in tasks if t.status == TaskStatus.FAILED]
+    failed = [t for t in tasks if t.status == TaskStatus.FAILED and not tolerated_failure(t, tasks)]
     if failed:
         first = failed[0]
         wf.error = f"Task '{first.key}' failed ({first.error_type or 'unknown'}): {first.error}"
@@ -153,7 +154,8 @@ async def schedule_workflow(
         logger.warning("workflow.failed id=%s failed_tasks=%s", wf.id, [t.key for t in failed])
         return changes + 1
 
-    if tasks and all(t.status in DONE_OK for t in tasks):
+    if tasks and all(t.status in DONE_OK or (t.status == TaskStatus.FAILED and tolerated_failure(t, tasks))
+                     for t in tasks):
         if wf.status == WorkflowStatus.AWAITING_APPROVAL:  # not reachable normally; keep it valid anyway
             await transition_workflow(session, wf, WorkflowStatus.RUNNING)
         await _complete(session, wf, tasks)
@@ -171,10 +173,9 @@ async def schedule_workflow(
 
     now = utcnow()
     for t in tasks:
-        # Promote PENDING tasks whose dependencies ALL succeeded.
-        if t.status == TaskStatus.PENDING and all(d.status == TaskStatus.SUCCEEDED for d in t.dependencies):
-            await transition_task(session, t, TaskStatus.READY, event_type=EventType.TASK_READY)
-            changes += 1
+        # Promote PENDING tasks per their join rule (Part 10; default: all dependencies succeeded), then run_if.
+        if t.status == TaskStatus.PENDING:
+            changes += await _promote(session, t)
         # Retry: a RETRYING task whose backoff has elapsed becomes READY again.
         elif t.status == TaskStatus.RETRYING and (t.next_attempt_at is None or t.next_attempt_at <= now):
             t.next_attempt_at = None
@@ -213,6 +214,45 @@ async def schedule_workflow(
     return changes
 
 
+def tolerated_failure(task: Task, tasks: list[Task]) -> bool:
+    """A failed task is tolerated when every task that depends on it accepts a failed dependency (Part 10)."""
+    dependents = [t for t in tasks if any(d.id == task.id for d in t.dependencies)]
+    return bool(dependents) and all((t.join or "all_succeeded") in TOLERANT_JOINS for t in dependents)
+
+
+def condition_outputs(deps: list[Task]) -> dict[str, dict[str, Any]]:
+    return {d.key: {"output": d.output, "status": str(d.status)} for d in deps}
+
+
+async def _promote(session: AsyncSession, t: Task) -> int:
+    decision, reason = decide(t)
+    if decision == "wait":
+        return 0
+    if decision == "skip":
+        t.skip_reason = reason
+        await transition_task(session, t, TaskStatus.SKIPPED, event_type=EventType.TASK_SKIPPED, reason=reason)
+        return 1
+    if t.run_if:
+        try:
+            ok, values = parse_condition(t.run_if).evaluate(condition_outputs(list(t.dependencies)))
+        except (ConditionError, ConditionSyntaxError) as exc:
+            record_event(session, workflow_id=t.workflow_id, task_id=t.id, event_type=EventType.TASK_CONDITION_EVALUATED,
+                         payload={"task_key": t.key, "expression": t.run_if, "error": str(exc)})
+            t.error_type, t.error = "condition_error", f"run_if could not be evaluated: {exc}"
+            await transition_task(session, t, TaskStatus.FAILED, event_type=EventType.TASK_FAILED,
+                                  reason="condition_error")
+            return 1
+        record_event(session, workflow_id=t.workflow_id, task_id=t.id, event_type=EventType.TASK_CONDITION_EVALUATED,
+                     payload={"task_key": t.key, "expression": t.run_if, "result": ok, "values": values})
+        if not ok:
+            t.skip_reason = "condition_false"
+            await transition_task(session, t, TaskStatus.SKIPPED, event_type=EventType.TASK_SKIPPED,
+                                  reason="condition_false")
+            return 1
+    await transition_task(session, t, TaskStatus.READY, event_type=EventType.TASK_READY)
+    return 1
+
+
 async def _complete(session: AsyncSession, wf: Workflow, tasks: list[Task]) -> None:
     nodes = [TaskNode(key=t.key, agent_type=t.agent_type, depends_on=[d.key for d in t.dependencies])
              for t in tasks]
@@ -221,11 +261,17 @@ async def _complete(session: AsyncSession, wf: Workflow, tasks: list[Task]) -> N
     for t in tasks:
         for k in tokens:
             tokens[k] += int((t.metrics or {}).get(k) or 0)
+    failed_branches = [{"key": t.key, "error_type": t.error_type, "error": t.error}
+                       for t in tasks if t.status == TaskStatus.FAILED]  # only tolerated ones reach completion
     wf.result = {
-        "final_outputs": {k: by_key[k].output for k in leaves(nodes)},
+        "final_outputs": {k: by_key[k].output for k in leaves(nodes) if by_key[k].status == TaskStatus.SUCCEEDED},
         "summary": (wf.context or {}).get("plan_summary"),
         "skipped": [t.key for t in tasks if t.status == TaskStatus.SKIPPED],
+        **({"failed_branches": failed_branches} if failed_branches else {}),
     }
+    if failed_branches:  # completed, but must not look clean
+        record_event(session, workflow_id=wf.id, event_type=EventType.WORKFLOW_COMPLETED_WITH_FAILED_BRANCHES,
+                     payload={"failed_branches": failed_branches})
     duration = (utcnow() - wf.started_at).total_seconds() if wf.started_at else None
     await transition_workflow(
         session, wf, WorkflowStatus.COMPLETED, event_type=EventType.WORKFLOW_COMPLETED,
