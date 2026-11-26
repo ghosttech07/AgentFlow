@@ -18,6 +18,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import urlencode
 
 from pydantic import BaseModel, ValidationError, create_model
 from sqlalchemy import select
@@ -30,6 +31,8 @@ from app.models.approval import Approval
 from app.models.tool_call import ToolCall
 from app.tools import journal
 from app.tools.base import WRITE_EFFECTS, Tool, ToolContext, ToolError
+from app.tools.exfil import ExfilContext, check_read_url, tokens_in, urls_in
+from app.tools.sources import normalize_url
 from app.tools.config import CredentialResolver, ToolsConfig, approval_mode
 from app.tools.prompting import FINAL_NOW, PROTOCOL, UNTRUSTED_RULE, StepView, steps_section, tools_section
 from app.tools.registry import get_tool
@@ -70,6 +73,7 @@ class ToolRuntime:
     # What made the upstream tainted (URLs read, injection flags), so an approver of a later send sees it.
     inherited_sources: list[str] = field(default_factory=list)
     inherited_warnings: list[str] = field(default_factory=list)
+    private_context: bool = False  # the task starts holding private data (e.g. a private memory; Part 10)
     resume: ResumeInfo | None = None
 
 
@@ -113,6 +117,10 @@ class LoopReport:
         if self.sources_verified is not None:
             out["sources_verified"] = self.sources_verified
         return out
+
+
+PRIVATE_TOOLS = frozenset({"sql_query", "file_read"})  # results that make an attempt hold private data
+READ_URL_TOOLS = frozenset({"web_fetch", "http_request"})
 
 
 def build_step_model(output_model: type[BaseModel], tool_names: list[str]) -> type[BaseModel]:
@@ -159,6 +167,10 @@ class ToolLoop:
                                                   *rt.inherited_sources],
                                injection_warnings=list(rt.inherited_warnings))
         self.credentials = CredentialResolver(rt.config)
+        # Exfiltration guard (Part 10): what this attempt has seen as data, and whether it holds private data.
+        self.private = rt.private_context
+        self.private_tokens: set[str] = set()
+        self.provenance: set[str] = urls_in(agent_input.task_input) | urls_in(agent_input.dependency_outputs)
 
     # ------------------------------------------------------------------ helpers
     def _options(self, tool: Tool) -> dict[str, Any]:
@@ -187,6 +199,10 @@ class ToolLoop:
         if view.status == "rejected_invalid":
             self.report.invalid_steps += 1
         if view.status == "succeeded":
+            if view.tool in PRIVATE_TOOLS:
+                self.private = True
+                self.private_tokens |= tokens_in(view.result or {})
+            self.provenance |= {normalize_url(u) for u in _urls_from(view.tool, view.arguments, view.result)}
             self.report.tool_calls += 1
             self.report.reused += int(view.reused)
             self.report.seen_urls |= _urls_from(view.tool, view.arguments, view.result)
@@ -355,6 +371,21 @@ class ToolLoop:
                    "input_schema": tool.input_model.model_json_schema()}
         raise ToolApprovalNeeded(call_id, payload, self.state)
 
+    def _exfil_warning(self, tool: Tool, args: BaseModel, side: str) -> str | None:
+        """Reads in a tainted or private-data attempt may only go to trusted URLs (see app/tools/exfil.py)."""
+        if tool.name not in READ_URL_TOOLS or side != "external_read" or not (self.state.tainted or self.private):
+            return None
+        url = str(getattr(args, "url", ""))
+        query = getattr(args, "query", None)
+        if query:
+            url += ("&" if "?" in url else "?") + urlencode(query)
+        options = self._options(tool)
+        return check_read_url(url, ExfilContext(
+            provenance=self.provenance, private_tokens=self.private_tokens,
+            read_allowlist=list(options.get("read_allowlist", [])),
+            max_url_length=self.rt.settings.exfil_max_url_length,
+            max_query_chars=self.rt.settings.exfil_max_query_chars))
+
     async def _budget_check(self) -> None:
         from app.services import budget_service
 
@@ -412,6 +443,9 @@ class ToolLoop:
             self._absorb(view)
             return
         warning = None
+        exfil = self._exfil_warning(tool, args, side)
+        if exfil:
+            await self._suspend(tool, args, reason, step_index, key, warning=exfil)
         if decision in ("unknown_reexecute", "unknown_needs_approval") and prev is not None:
             await journal.set_status(self.sf, prev.id, "superseded", finished_at=utcnow(),
                                      error="outcome unknown; replaced by a new call")

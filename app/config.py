@@ -113,6 +113,9 @@ class Settings(BaseSettings):
     max_tool_output_chars: int = Field(default=4000, ge=200)
     tool_loop_timeout_seconds: float = Field(default=900.0, gt=0)  # replaces TASK_TIMEOUT for tool agents
     tool_result_reuse_seconds: int = Field(default=3600, ge=0)  # reads reused from the journal this long
+    # Part 10 exfiltration guard: caps for reads in tainted / private-data attempts.
+    exfil_max_url_length: int = Field(default=500, ge=50)
+    exfil_max_query_chars: int = Field(default=200, ge=0)
     workspaces_dir: Path = PROJECT_ROOT / "outputs" / "workspaces"
     outbox_dir: Path = PROJECT_ROOT / "outputs" / "outbox"
     sample_data_url: str = "postgresql+asyncpg://agentflow_reader:reader@localhost:5432/agentflow_sample"
