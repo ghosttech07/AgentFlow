@@ -41,7 +41,7 @@ from app.llm.fake_client import FakeLLMClient
 from app.main import create_app
 
 TEST_DATABASE_URL = get_settings().test_database_url
-TABLES = ("workflow_events", "task_dependencies", "tasks", "workflows", "provider_usage")  # others cascade
+TABLES = ("workflow_events", "task_dependencies", "tasks", "workflows", "provider_usage", "asks")  # others cascade
 
 
 def _alembic_config() -> Config:
@@ -49,6 +49,17 @@ def _alembic_config() -> Config:
     cfg.attributes["database_url"] = TEST_DATABASE_URL
     cfg.attributes["skip_logging_config"] = True
     return cfg
+
+
+@pytest.fixture(scope="session", autouse=True)
+def sample_data_source() -> None:
+    """Part 9: the read-only sample database used by sql_query (idempotent; same code as the CLI script)."""
+    import asyncio
+
+    from scripts.setup_sample_data import ensure_sample_data
+
+    s = get_settings()
+    asyncio.run(ensure_sample_data(s.database_url, s.sample_db_reader_password.get_secret_value()))
 
 
 @pytest.fixture(scope="session", autouse=True)

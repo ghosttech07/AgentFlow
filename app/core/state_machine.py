@@ -29,8 +29,9 @@ Task transitions
 | PENDING           | READY, SKIPPED, CANCELLED                        | deps done / upstream rejected / cancel  |
 | READY             | RUNNING, AWAITING_APPROVAL, SKIPPED, CANCELLED   | claimed / needs approval / cancel       |
 | AWAITING_APPROVAL | READY, FAILED, SKIPPED, CANCELLED                | approved / rejected or expired (P6)     |
-| RUNNING           | SUCCEEDED, FAILED, RETRYING, READY, CANCELLED    | attempt outcome; READY = interrupted by |
-|                   |                                                  | an immediate pause (P6)                 |
+| RUNNING           | SUCCEEDED, FAILED, RETRYING, READY,              | attempt outcome; READY = interrupted by |
+|                   | AWAITING_APPROVAL, CANCELLED                     | an immediate pause (P6); AWAITING_APPRO-|
+|                   |                                                  | VAL = a tool call needs a human (P9)    |
 | RETRYING          | READY, RUNNING, FAILED, CANCELLED                | backoff elapsed / retries exhausted (P5)|
 | SUCCEEDED         | (none - terminal)                                |                                         |
 | FAILED            | RETRYING, PENDING                                | EXCEPTION: retry / recovery (P5)        |
@@ -77,7 +78,8 @@ TASK_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
     T.PENDING: frozenset({T.READY, T.SKIPPED, T.CANCELLED}),
     T.READY: frozenset({T.RUNNING, T.AWAITING_APPROVAL, T.SKIPPED, T.CANCELLED}),
     T.AWAITING_APPROVAL: frozenset({T.READY, T.FAILED, T.SKIPPED, T.CANCELLED}),
-    T.RUNNING: frozenset({T.SUCCEEDED, T.FAILED, T.RETRYING, T.READY, T.CANCELLED}),
+    # AWAITING_APPROVAL (Part 9): suspended mid tool loop until a human decides on one tool call.
+    T.RUNNING: frozenset({T.SUCCEEDED, T.FAILED, T.RETRYING, T.READY, T.AWAITING_APPROVAL, T.CANCELLED}),
     T.RETRYING: frozenset({T.READY, T.RUNNING, T.FAILED, T.CANCELLED}),
     T.SUCCEEDED: frozenset(),
     T.FAILED: frozenset({T.RETRYING, T.PENDING}),  # exception to terminality: retry/recovery

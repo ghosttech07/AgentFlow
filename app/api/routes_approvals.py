@@ -46,7 +46,9 @@ async def approve(
 ) -> ApprovalRead:
     """Approve (optionally correcting the task input). The task becomes READY."""
     approval = await approval_service.approve(session, approval_id, actor=body.actor, comment=body.comment,
-                                              input_overrides=body.input_overrides)
+                                              input_overrides=body.input_overrides,
+                                              arguments_overrides=body.arguments_overrides,
+                                              allow_recipient_override=body.allow_recipient_override)
     if engine:
         engine.wake()
     return ApprovalRead.model_validate(approval)
@@ -60,8 +62,9 @@ async def reject(
 ) -> ApprovalRead:
     """fail_workflow: task FAILED (rejected) and workflow FAILED. skip_task: task and all its
     descendants SKIPPED; other branches continue."""
+    on_reject = body.on_reject or await approval_service.default_on_reject(session, approval_id)
     approval = await approval_service.reject(session, approval_id, actor=body.actor, reason=body.reason,
-                                             on_reject=body.on_reject)
+                                             on_reject=on_reject)
     if engine:
         engine.wake()
     return ApprovalRead.model_validate(approval)

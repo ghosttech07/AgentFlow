@@ -41,7 +41,10 @@ class Approval(Base):
     comment: Mapped[str | None] = mapped_column(Text)
     request_payload: Mapped[dict[str, Any]] = mapped_column(default=dict, server_default=text("'{}'::jsonb"))
     input_overrides: Mapped[dict[str, Any] | None] = mapped_column()
-    on_reject: Mapped[str | None] = mapped_column(String(32))  # fail_workflow | skip_task
+    on_reject: Mapped[str | None] = mapped_column(String(32))  # fail_workflow | skip_task | inform_agent | fail_task
+    # Part 9: "task" (a requires_approval task run) | "tool_call" (one proposed tool call inside a task).
+    kind: Mapped[str] = mapped_column(String(16), default="task", server_default="task")
+    tool_call_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("tool_calls.id", ondelete="SET NULL"))
 
     workflow: Mapped[Workflow] = relationship(back_populates="approvals")
 

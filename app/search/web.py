@@ -66,7 +66,7 @@ def provider_name(settings: Settings) -> str:
     return choice
 
 
-async def _search_ddgs(query: str, settings: Settings) -> list[dict[str, str]]:
+async def _search_ddgs(query: str, settings: Settings, max_results: int | None = None) -> list[dict[str, str]]:
     from ddgs import DDGS  # imported lazily: optional at import time, slow to import
 
     def run() -> list[dict[str, str]]:
@@ -74,7 +74,7 @@ async def _search_ddgs(query: str, settings: Settings) -> list[dict[str, str]]:
         error: Exception | None = None
         for backend in [b.strip() for b in settings.web_search_backends.split(",") if b.strip()]:
             try:
-                rows = DDGS(timeout=10).text(query, max_results=settings.web_max_results, backend=backend)
+                rows = DDGS(timeout=10).text(query, max_results=max_results or settings.web_max_results, backend=backend)
             except Exception as exc:
                 error = exc
                 continue
@@ -89,12 +89,12 @@ async def _search_ddgs(query: str, settings: Settings) -> list[dict[str, str]]:
     return await asyncio.to_thread(run)  # ddgs is synchronous
 
 
-async def _search_tavily(query: str, settings: Settings) -> list[dict[str, str]]:
+async def _search_tavily(query: str, settings: Settings, max_results: int | None = None) -> list[dict[str, str]]:
     assert settings.tavily_api_key is not None
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.post("https://api.tavily.com/search", json={
             "api_key": settings.tavily_api_key.get_secret_value(), "query": query,
-            "max_results": settings.web_max_results, "search_depth": "basic", "include_raw_content": True,
+            "max_results": max_results or settings.web_max_results, "search_depth": "basic", "include_raw_content": True,
         })
         resp.raise_for_status()
     return [{"title": r.get("title", ""), "url": r.get("url", ""), "snippet": r.get("content", ""),

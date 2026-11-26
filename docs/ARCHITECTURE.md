@@ -53,6 +53,70 @@ reliability, cost limits and safety; humans approve under policy; every step is 
 6. The worker saves the result with the ownership guard (status + lease owner + attempt) in one
    transaction: task metrics and the attempt row carry provider and cost.
 
+## State machines
+Generated from `app/core/state_machine.py`; `tests/test_architecture_diagrams.py` fails if they drift.
+
+### Workflow states
+```mermaid
+stateDiagram-v2
+    [*] --> PENDING
+    PENDING --> CANCELLED
+    PENDING --> FAILED
+    PENDING --> PLANNING
+    PENDING --> RUNNING
+    PLANNING --> CANCELLED
+    PLANNING --> FAILED
+    PLANNING --> PENDING
+    PLANNING --> RUNNING
+    RUNNING --> AWAITING_APPROVAL
+    RUNNING --> CANCELLED
+    RUNNING --> COMPLETED
+    RUNNING --> FAILED
+    RUNNING --> PAUSED
+    PAUSED --> AWAITING_APPROVAL
+    PAUSED --> CANCELLED
+    PAUSED --> FAILED
+    PAUSED --> RUNNING
+    AWAITING_APPROVAL --> CANCELLED
+    AWAITING_APPROVAL --> FAILED
+    AWAITING_APPROVAL --> PAUSED
+    AWAITING_APPROVAL --> RUNNING
+    FAILED --> CANCELLED
+    FAILED --> PLANNING
+    FAILED --> RUNNING
+```
+
+### Task states
+RUNNING -> AWAITING_APPROVAL (Part 9) = suspended mid tool loop until a human decides on one tool call.
+
+```mermaid
+stateDiagram-v2
+    [*] --> PENDING
+    PENDING --> CANCELLED
+    PENDING --> READY
+    PENDING --> SKIPPED
+    READY --> AWAITING_APPROVAL
+    READY --> CANCELLED
+    READY --> RUNNING
+    READY --> SKIPPED
+    AWAITING_APPROVAL --> CANCELLED
+    AWAITING_APPROVAL --> FAILED
+    AWAITING_APPROVAL --> READY
+    AWAITING_APPROVAL --> SKIPPED
+    RUNNING --> AWAITING_APPROVAL
+    RUNNING --> CANCELLED
+    RUNNING --> FAILED
+    RUNNING --> READY
+    RUNNING --> RETRYING
+    RUNNING --> SUCCEEDED
+    RETRYING --> CANCELLED
+    RETRYING --> FAILED
+    RETRYING --> READY
+    RETRYING --> RUNNING
+    FAILED --> PENDING
+    FAILED --> RETRYING
+```
+
 ## Where each guarantee lives
 | Guarantee | Code |
 |---|---|

@@ -98,4 +98,4 @@ async def test_workflow_detail_shows_budget_usage_remaining(client: AsyncClient)
     assert d["budget"] == {"max_cost_usd": 1.5}
     assert d["effective_budget"]["max_cost_usd"] == 1.5 and d["effective_budget"]["max_llm_calls"] == 50
     assert d["usage"]["llm_calls"] == 0 and d["remaining"] == {"llm_calls": 50, "tokens": None, "cost_usd": 1.5,
-                                                               "duration_seconds": None}
+                                                               "duration_seconds": None, "tool_calls": None}

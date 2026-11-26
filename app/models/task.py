@@ -85,6 +85,8 @@ class Task(Base):
     requires_approval: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=text("false")
     )
+    # Part 9: an attempt read untrusted content (web/API); downstream tasks start tainted.
+    tainted: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
     attempt_count: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     max_attempts: Mapped[int] = mapped_column(Integer, default=3, server_default=text("3"))
 
