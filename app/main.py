@@ -28,11 +28,13 @@ from app.api import (
     routes_health,
     routes_plans,
     routes_providers,
+    routes_tools,
     routes_workflows,
 )
 from app.config import PROJECT_ROOT, get_settings
 from app.core.errors import AppError
 from app.core.logging import setup_logging
+from app.tools.startup import log_tools_config
 from app.db.session import SessionLocal, engine
 from app.engine import Engine
 from app.llm import get_llm_client
@@ -97,6 +99,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.warning("LLM_PROVIDER=fake: NO REAL MODEL CALLS. Agents return canned demo output "
                        "after %.1fs.", settings.fake_llm_delay_seconds)
         logger.warning("=" * 72)
+    log_tools_config()  # Part 9: a bad tools.yaml stops startup; disabled tools are logged once
     app.state.engine = None
     if settings.engine_enabled:
         llm = get_llm_client()
@@ -129,6 +132,7 @@ def create_app() -> FastAPI:
     app.include_router(routes_engine.router)
     app.include_router(routes_ask.router)
     app.include_router(routes_providers.router)
+    app.include_router(routes_tools.router)
     app.include_router(routes_approvals.router)
     app.include_router(routes_dashboard.router)
     app.include_router(routes_dev.router)

@@ -1,0 +1,46 @@
+# AgentFlow tools (Part 9). Copy to config/tools.yaml to give agents tools.
+# No tools.yaml = no agent has tools: everything behaves exactly as before Part 9.
+#
+# approval: never | always | external_write_only   (default: always for external_write tools, else never)
+#   Code-enforced on top of this, and it can't be turned off: once a task has read untrusted content
+#   (web_search / web_fetch / http_request), every external_write call needs a human approval.
+# on_reject: inform_agent (the agent hears "denied by human: <reason>" and adapts) | fail_task
+
+tools:
+  web_search:
+    backends: [tavily, ddgs]   # tried in order; tavily is skipped without TAVILY_API_KEY; ddgs = free, best-effort
+    max_results: 5
+  web_fetch:
+    backend: http              # http | fake (canned pages, tests/demos)
+    max_bytes: 2000000
+    max_redirects: 5
+  http_request:
+    allowed_domains: [api.github.com, "*.example.com"]
+  sql_query:
+    sources:
+      sample: {url_env: SAMPLE_DATA_URL}   # read-only role; create it with: python scripts/setup_sample_data.py
+    row_limit: 200
+  calculator: {}
+  file_write: {}
+  file_read: {}
+  file_list: {}
+  send_email:
+    backend: outbox            # outbox (writes outputs/outbox/*.eml, nothing is sent) | smtp
+    allowed_recipients: ["*@example.com"]
+    approval: always
+    # smtp: {host: smtp.example.com, port: 587, starttls: true, credential: smtp, from: agentflow@example.com}
+  webhook_post:
+    allowed_urls: ["https://hooks.slack.com/services/"]
+    approval: always
+
+# Which agents may use which tools (intersected with each agent's own allowlist; config wins).
+agents:
+  researcher: [web_search, web_fetch]
+  analyst: [sql_query, calculator]
+  writer: [file_write]
+  communicator: [send_email, webhook_post]
+
+# Named credentials: the agent passes only the NAME; the secret comes from the environment variable.
+credentials:
+  github: {env: GITHUB_TOKEN, header: Authorization, format: "Bearer {secret}"}
+  # smtp: {env: SMTP_PASSWORD, header: password, format: "{secret}"}
