@@ -32,7 +32,10 @@
 # ---------------------------------------------------------------------------------------------
 # routes:
 #   default: ["ollama:llama3.2:3b", "ollama:qwen3:4b", "gemini:gemini-3.5-flash-lite"]
-#   planner: ["ollama:llama3.2:3b", "gemini:gemini-3.5-flash"]
+#   # Live-tested 2026-11-26: llama3.2:3b produced invalid plans (too many tasks) three times in a
+#   # row, and an invalid plan is not a provider error, so it never falls back. qwen3:4b plans
+#   # correctly (slowly). Prefer Gemini for planning whenever you have quota.
+#   planner: ["ollama:qwen3:4b", "gemini:gemini-3.5-flash"]
 # quotas:
 #   "gemini:gemini-3.5-flash": {requests_per_day: 20, timezone: America/Los_Angeles}
 
