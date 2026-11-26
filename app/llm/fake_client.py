@@ -52,6 +52,7 @@ class FakeLLMClient:
         delay: float = 0.0,
         delays: dict[type[BaseModel], float] | None = None,
         scripts: list[FakeScript] | None = None,
+        tool_policy: Any = None,
     ) -> None:
         self.responses = responses or {}
         self.error = error
@@ -59,6 +60,8 @@ class FakeLLMClient:
         self.delay = delay
         self.delays = delays or {}
         self.scripts = scripts or []
+        # Part 9: callable(agent_output_model, user_prompt) -> next tool-loop step (demo mode)
+        self.tool_policy = tool_policy
         self.calls: list[dict[str, Any]] = []
 
     async def generate_structured(
@@ -93,6 +96,8 @@ class FakeLLMClient:
             if steps:
                 payload = steps.pop(0)
                 payload = payload(user_prompt) if callable(payload) else payload
+            elif self.tool_policy is not None:
+                payload = self.tool_policy(agent_output, user_prompt)
             else:
                 payload = {"action": "final", "tool": None, "arguments": None, "reason": None,
                            "output": fake_data(agent_output)}

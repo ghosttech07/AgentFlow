@@ -52,6 +52,8 @@ class BaseAgent(ABC):
     thinking_level: ClassVar[str | None] = None
     # Part 9: tools this agent may use (intersected with config/tools.yaml; the config wins).
     allowed_tools: ClassVar[tuple[str, ...]] = ()
+    # True = useless without its tools: the planner only offers it when they are configured (communicator).
+    requires_tools: ClassVar[bool] = False
 
     def __init__(self, llm: LLMClient) -> None:
         self.llm = llm

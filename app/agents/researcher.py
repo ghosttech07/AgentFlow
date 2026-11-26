@@ -18,6 +18,8 @@ class ResearchOutput(BaseModel):
     sources: list[Source]
     confidence: Literal["low", "medium", "high"]
     gaps: list[str] = Field(description="What could not be found or verified.")
+    removed_unverified_sources: list[Source] = Field(
+        default_factory=list, description="Filled by the system: cited sources that were never opened (removed).")
 
 
 CITE_RE = re.compile(r"\[(\d{1,2}(?:\s*[,;]\s*\d{1,2})*)\]")  # [2], [1, 4], [1;3]
@@ -50,6 +52,7 @@ class ResearcherAgent(BaseAgent):
                    "findings with sources. Give it search_queries in its input.")
     output_model = ResearchOutput
     use_search = True  # Gemini Google Search grounding, only when ENABLE_SEARCH_GROUNDING (billing)
+    allowed_tools = ("web_search", "web_fetch")  # Part 9: with tools.yaml the model searches and reads itself
     system_prompt = """You are a meticulous research analyst with access to freshly retrieved web pages.
 Your job: extract accurate, current, verifiable facts for the task from the WEB SOURCES provided.
 Rules:
@@ -73,6 +76,8 @@ Rules:
         return not self.settings.enable_search_grounding and web.provider_name(self.settings) != "none"
 
     async def run(self, agent_input: AgentInput) -> AgentResult:
+        if self.tool_runtime is not None and self.tool_runtime.tools:
+            return await super().run(agent_input)  # Part 9: the model searches and reads with tools itself
         if self._uses_web_layer():
             self._web = await web.gather(research_queries(agent_input), self.settings)
         return await super().run(agent_input)
@@ -82,6 +87,20 @@ Rules:
         if self._web is not None:
             prompt += "\n" + self._web.as_prompt(today())
         return prompt
+
+    def postprocess_tools(self, data: ResearchOutput, report) -> ResearchOutput:  # noqa: ANN001
+        """Code decides the sources: only URLs returned by web_search or opened with web_fetch in THIS task.
+        Invented URLs are removed (kept in removed_unverified_sources) and confidence drops one level."""
+        from app.tools.sources import lower_confidence, verify_sources
+
+        verified, removed = verify_sources(data.sources, report.seen_urls)
+        data.sources, data.removed_unverified_sources = verified, removed
+        if removed:
+            data.confidence = lower_confidence(data.confidence)
+            data.gaps = [*data.gaps, f"{len(removed)} cited source(s) were never opened and were removed."]
+        report.sources_verified = {"verified": len(verified), "removed": len(removed),
+                                   "removed_urls": [s.url for s in removed][:10]}
+        return data
 
     def postprocess(self, data: ResearchOutput, response: LLMResponse) -> ResearchOutput:
         # Code decides the source list: grounding metadata, or the pages we actually retrieved.

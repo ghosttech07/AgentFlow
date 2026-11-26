@@ -20,7 +20,7 @@ async def test_list_agents(client: AsyncClient) -> None:
     resp = await client.get("/agents")
     assert resp.status_code == 200
     agents = {a["agent_type"]: a for a in resp.json()}
-    assert set(agents) == {"analyst", "planner", "publisher", "researcher", "reviewer", "writer"}
+    assert set(agents) == {"analyst", "communicator", "planner", "publisher", "researcher", "reviewer", "writer"}
     assert agents["publisher"]["sensitive"] is True
     assert agents["planner"]["assignable"] is False and agents["writer"]["assignable"] is True
     assert "approved" in agents["reviewer"]["output_schema"]["properties"]
@@ -76,4 +76,4 @@ async def test_workflow_rejects_unknown_agent_type(client: AsyncClient) -> None:
     assert resp.status_code == 422
     message = resp.json()["error"]["message"]
     assert "unknown agent_type 'wizard'" in message
-    assert "Valid agent types: analyst, publisher, researcher, reviewer, writer" in message
+    assert "Valid agent types: analyst, communicator, publisher, researcher, reviewer, writer" in message

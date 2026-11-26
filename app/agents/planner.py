@@ -77,7 +77,7 @@ class PlannerAgent(BaseAgent):
         return None  # planning quality matters most: always the main GEMINI_MODEL
 
     def build_system_prompt(self) -> str:
-        catalog = "\n".join(_describe_agent(t) for t in task_agent_types())
+        catalog = "\n".join(_describe_agent(t) for t in plannable_agent_types())
         return f"""You are the planner of a multi-agent system. Turn the user's goal into a task graph that the agents below execute.
 
 AVAILABLE AGENTS (use these agent_type values exactly; no others exist):
@@ -96,6 +96,7 @@ RULES
 9. Set requires_approval=true for any task that publishes, sends, deletes, spends money, or contacts people. Tasks of agents marked [SENSITIVE] always require approval.
 10. Use the publisher ONLY when the goal explicitly asks to publish, post or share the result. It is always the LAST task and depends on the reviewer and on the writer task whose content it publishes. Never add it otherwise.
 11. Fill every field, including a one-sentence rationale per task.
+12. Agents list their TOOLS. Use the communicator ONLY when the goal explicitly asks to send, email or notify someone. It is the LAST task (after the writer, and after the reviewer if there is one); put the recipients exactly as the user gave them into its input ("recipients"). Never invent recipients.
 
 EXAMPLE OF A GOOD PLAN (parallel research -> analysis -> writing -> review):
 {json.dumps(EXAMPLE_PLAN, indent=2)}"""
@@ -118,7 +119,22 @@ EXAMPLE OF A GOOD PLAN (parallel research -> analysis -> writing -> review):
         return prompt
 
 
+def _agent_tools(agent_type: str) -> list[str]:
+    from app.tools import config as tools_config
+
+    return tools_config.effective_tools(agent_type, get_agent_class(agent_type).allowed_tools,
+                                        tools_config.get_tools_config())
+
+
+def plannable_agent_types() -> list[str]:
+    """Assignable agents the planner may use: an agent that requires tools is offered only when they are configured."""
+    return [t for t in task_agent_types() if not get_agent_class(t).requires_tools or _agent_tools(t)]
+
+
 def _describe_agent(agent_type: str) -> str:
     cls = get_agent_class(agent_type)
     flag = " [SENSITIVE: always requires approval]" if cls.sensitive else ""
-    return f"- {agent_type}{flag}: {cls.description} Output fields: {', '.join(cls.output_model.model_fields)}."
+    tools = _agent_tools(agent_type)
+    tool_text = f" Tools: {', '.join(tools)}." if tools else ""
+    return (f"- {agent_type}{flag}: {cls.description}{tool_text} "
+            f"Output fields: {', '.join(cls.output_model.model_fields)}.")

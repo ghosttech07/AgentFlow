@@ -26,7 +26,7 @@ from sqlalchemy.orm import selectinload
 from app.agents import AgentInput, AgentResult, create_agent
 from app.config import Settings
 from app.core.enums import TaskStatus
-from app.core.events import EventType
+from app.core.events import EventType, record_event
 from app.core.state_machine import transition_task
 from app.db.base import utcnow
 from app.engine import chaos
@@ -240,7 +240,8 @@ async def _save(
             task.lease_expires_at = None
             task.output = result.output
             task.metrics = task_metrics(result)
-            task.tainted = bool(getattr(result, "tainted", False))
+            # Taint flows through dependencies even across tasks without tools (researcher -> writer -> communicator).
+            task.tainted = bool(getattr(result, "tainted", False)) or await _upstream_tainted(session, task.id)
             task.error = task.error_type = None
             await close_attempt(session, task.id, outcome="succeeded", model=result.model,
                                 input_tokens=result.input_tokens, output_tokens=result.output_tokens,
@@ -252,6 +253,11 @@ async def _save(
                        "latency_ms": result.latency_ms, "input_tokens": result.input_tokens,
                        "output_tokens": result.output_tokens},
             )
+            verified = (result.tool_summary or {}).get("sources_verified")
+            if verified is not None:
+                record_event(session, workflow_id=task.workflow_id, task_id=task.id,
+                             event_type=EventType.TASK_SOURCES_VERIFIED,
+                             payload={"task_key": task.key, **verified})
             logger.info("task.succeeded key=%s attempt=%d model=%s latency_ms=%d",
                         task.key, task.attempt_count, result.model, result.latency_ms)
         else:
@@ -264,6 +270,14 @@ async def _save(
                            task.key, task.attempt_count, error_type, new_status, message)
         await session.commit()
         return True
+
+
+async def _upstream_tainted(session: AsyncSession, task_id: uuid.UUID) -> bool:
+    from app.models.task import task_dependencies
+
+    return bool(await session.scalar(
+        select(Task.id).join(task_dependencies, task_dependencies.c.depends_on_task_id == Task.id)
+        .where(task_dependencies.c.task_id == task_id, Task.tainted.is_(True)).limit(1)))
 
 
 async def _suspend(session_factory: async_sessionmaker[AsyncSession], claim: Claim, worker_id: str,

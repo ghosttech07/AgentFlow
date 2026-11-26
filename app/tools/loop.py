@@ -100,10 +100,16 @@ class LoopReport:
     fallback_from: str | None = None
     route_position: int = 0
 
+    sources_verified: dict[str, Any] | None = None  # set by the researcher's code check
+    calls: list[dict[str, Any]] = field(default_factory=list)  # every step (tool, status, arguments, result, ...)
+
     def summary(self) -> dict[str, Any]:
-        return {"steps": self.steps, "tool_calls": self.tool_calls, "invalid_steps": self.invalid_steps,
-                "reused": self.reused, "tainted": self.tainted, "by_tool": self.by_tool,
-                "untrusted_sources": self.untrusted_sources[:20], "injection_warnings": self.injection_warnings}
+        out = {"steps": self.steps, "tool_calls": self.tool_calls, "invalid_steps": self.invalid_steps,
+               "reused": self.reused, "tainted": self.tainted, "by_tool": self.by_tool,
+               "untrusted_sources": self.untrusted_sources[:20], "injection_warnings": self.injection_warnings}
+        if self.sources_verified is not None:
+            out["sources_verified"] = self.sources_verified
+        return out
 
 
 def build_step_model(output_model: type[BaseModel], tool_names: list[str]) -> type[BaseModel]:
@@ -260,12 +266,39 @@ class ToolLoop:
             status, error = "failed", f"{tool.name} failed unexpectedly: {type(exc).__name__}"
         duration = int((time.monotonic() - start) * 1000)
         result = self._truncate(result, tool)
+        warnings = await self._scan(tool, result, call_id) if status == "succeeded" else []
         await journal.record_finish(self.sf, call_id, status=status, result=result, error=error, duration_ms=duration,
-                                    secrets=self.credentials.secret_values())
+                                    secrets=self.credentials.secret_values(),
+                                    **({"injection_warnings": warnings} if warnings else {}))
         logger.info("tool.%s tool=%s task=%s step=%d ms=%d", status, tool.name, self.rt.task_key, step_index, duration)
         return StepView(index=step_index, tool=tool.name, arguments=args.model_dump(mode="json"), status=status,
                         result=result, error=error, untrusted=tool.untrusted,
                         source=_source_label(tool.name, args.model_dump(mode="json")), call_id=call_id)
+
+    async def _scan(self, tool: Tool, result: dict[str, Any] | None, call_id: uuid.UUID) -> list[str]:
+        """Flag (never block) instruction-like text in untrusted results: journal row, event, approval payload."""
+        if not tool.untrusted or not result:
+            return []
+        from app.core.events import EventType, record_event
+        from app.tools.injection import scan
+
+        found = scan(result)
+        if not found:
+            return []
+        source = str(result.get("final_url") or result.get("url") or tool.name)
+        for name in found:
+            note = f"{name} ({source})"
+            if note not in self.state.injection_warnings:
+                self.state.injection_warnings.append(note)
+        async with self.sf() as s:
+            record_event(s, workflow_id=self.rt.workflow_id, task_id=self.rt.task_id,
+                         event_type=EventType.TOOL_INJECTION_SUSPECTED,
+                         payload={"task_key": self.rt.task_key, "tool": tool.name, "source": source,
+                                  "rules": found, "tool_call_id": str(call_id)})
+            await s.commit()
+        logger.warning("tool.injection_suspected task=%s tool=%s source=%s rules=%s", self.rt.task_key, tool.name,
+                       source, found)
+        return found
 
     def _truncate(self, result: dict[str, Any] | None, tool: Tool) -> dict[str, Any] | None:
         if result is None:
@@ -404,6 +437,8 @@ class ToolLoop:
                 self.report.tainted = self.state.tainted
                 self.report.untrusted_sources = list(self.state.untrusted_sources)
                 self.report.injection_warnings = list(self.state.injection_warnings)
+                self.report.calls = [{"tool": v.tool, "status": v.status, "arguments": v.arguments, "result": v.result,
+                                      "error": v.error, "call_id": v.call_id, "reused": v.reused} for v in self.history]
                 return step.output, self.report  # type: ignore[attr-defined]
             if forced:
                 raise LLMOutputError(f"{self.agent.agent_type} did not return a final answer after "
