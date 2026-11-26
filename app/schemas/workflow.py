@@ -25,6 +25,7 @@ class Budget(BaseModel):
     max_tokens: int | None = Field(default=None, ge=1)
     max_llm_calls: int | None = Field(default=None, ge=1)
     max_duration_seconds: float | None = Field(default=None, gt=0)
+    max_tool_calls: int | None = Field(default=None, ge=1)  # Part 9: executed tool calls (reuses don't count)
 
     def stored(self) -> dict[str, Any]:
         return self.model_dump(exclude_unset=True)

@@ -108,6 +108,17 @@ class Settings(BaseSettings):
     approval_webhook_url: str | None = None
     publish_dir: Path = PROJECT_ROOT / "outputs" / "published"
 
+    # Tools + safe actions (Part 9). No tools.yaml = no agent has tools (Part 8 behaviour).
+    tools_config_path: Path = PROJECT_ROOT / "config" / "tools.yaml"
+    max_tool_steps: int = Field(default=8, ge=1, le=50)
+    max_tool_output_chars: int = Field(default=4000, ge=200)
+    tool_loop_timeout_seconds: float = Field(default=900.0, gt=0)  # replaces TASK_TIMEOUT for tool agents
+    tool_result_reuse_seconds: int = Field(default=3600, ge=0)  # reads reused from the journal this long
+    workspaces_dir: Path = PROJECT_ROOT / "outputs" / "workspaces"
+    outbox_dir: Path = PROJECT_ROOT / "outputs" / "outbox"
+    sample_data_url: str = "postgresql+asyncpg://agentflow_reader:reader@localhost:5432/agentflow_sample"
+    sample_db_reader_password: SecretStr = SecretStr("reader")
+
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
 
     @field_validator("gemini_fallback_models", mode="before")

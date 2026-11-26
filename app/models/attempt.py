@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import BigInteger, ForeignKey, Identity, Index, Integer, Numeric, String, Text, UniqueConstraint, func, text
 from sqlalchemy.orm import Mapped, mapped_column
@@ -30,7 +31,7 @@ class TaskAttempt(Base):
     worker_id: Mapped[str] = mapped_column(String(255))
     started_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=func.now())
     finished_at: Mapped[datetime | None] = mapped_column()
-    # running | succeeded | failed | worker_lost
+    # running | succeeded | failed | worker_lost | interrupted | cancelled | budget_paused | suspended
     outcome: Mapped[str] = mapped_column(String(16), default="running", server_default="running")
     error_type: Mapped[str | None] = mapped_column(String(32))
     error: Mapped[str | None] = mapped_column(Text)
@@ -40,6 +41,8 @@ class TaskAttempt(Base):
     latency_ms: Mapped[int | None] = mapped_column(Integer)
     provider: Mapped[str | None] = mapped_column(String(32))  # Part 8
     cost_usd: Mapped[float | None] = mapped_column(Numeric(12, 6, asdecimal=False))  # Part 8; None = unknown
+    # Part 9: tool-loop checkpoint (taint, untrusted sources, step counter, pending tool call) for a resume.
+    loop_state: Mapped[dict[str, Any] | None] = mapped_column()
 
 
 class ChaosRule(Base):
