@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agents import AgentInput, create_agent
 from app.agents.planner import Plan, plannable_agent_types
 from app.config import get_settings
-from app.core.dag import PlanValidationError, execution_levels, to_mermaid, validate_plan
+from app.core.dag import PlanValidationError, execution_levels, to_mermaid, validate_adaptive, validate_plan
 from app.core.enums import WorkflowStatus
 from app.core.errors import AppError, ConflictError, NotFoundError
 from app.core.events import EventType, record_event
@@ -37,6 +37,7 @@ from app.models.workflow import Workflow
 from app.schemas.plan import PlanConstraints
 from app.schemas.task import TaskCreate
 from app.schemas.workflow import WorkflowCreate
+from app.services.graph_service import init_adaptive
 from app.services.workflow_service import (
     build_tasks,
     create_workflow,
@@ -107,6 +108,8 @@ async def plan(
             totals[k] += getattr(result, k)
         candidate = Plan.model_validate(result.output)
         errors = validate_plan(candidate.tasks, plannable_agent_types(), max_tasks)
+        if not errors:
+            errors = validate_adaptive(candidate.tasks, candidate.loops, settings.max_loop_iterations)
         logger.info("plan.attempt attempt=%d/%d tasks=%d errors=%d",
                     attempt, max_attempts, len(candidate.tasks), len(errors))
         if not errors:
@@ -124,6 +127,7 @@ async def plan(
         TaskCreate(
             key=t.key, name=t.name[:255], description=t.description, agent_type=t.agent_type,
             input=t.input, requires_approval=t.requires_approval, depends_on=t.depends_on,
+            run_if=t.run_if, join=t.join, replan_if=t.replan_if,
         )
         for t in candidate.tasks
     ]
@@ -175,6 +179,9 @@ async def complete_planning(
         record_task_created_events(session, result.specs, tasks)
         # Reassign (not mutate) so SQLAlchemy detects the JSONB change.
         workflow.context = {**workflow.context, "plan_summary": result.plan.plan_summary}
+        await init_adaptive(session, workflow, tasks, result.plan.loops,
+                            replan_on_failure=result.plan.replan_on_failure, created_by="planner",
+                            plan=result.plan.model_dump(by_alias=True))
         record_event(
             session,
             workflow_id=workflow.id,

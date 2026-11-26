@@ -17,7 +17,7 @@ from sqlalchemy.orm import selectinload
 
 from app.agents.registry import sensitive_agent_types, task_agent_types
 from app.config import get_settings
-from app.core.dag import TaskLike, TaskNode, execution_levels, to_mermaid, validate_plan
+from app.core.dag import TaskLike, TaskNode, execution_levels, to_mermaid, validate_adaptive, validate_plan
 from app.core.enums import TaskStatus, WorkflowStatus
 from app.core.errors import ConflictError, NotFoundError, ValidationFailedError
 from app.core.events import EventType, record_event
@@ -29,6 +29,7 @@ from app.models.task import Task
 from app.models.workflow import Workflow
 from app.schemas.task import TaskCreate
 from app.schemas.workflow import WorkflowCreate
+from app.services.graph_service import init_adaptive
 
 logger = logging.getLogger(__name__)
 
@@ -38,12 +39,13 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------------------------
 
 
-def validate_task_graph(tasks: Sequence[TaskLike]) -> None:
-    """Run the DAG rules (app.core.dag.validate_plan). Raises ValidationFailedError listing ALL errors.
-
-    Shared by manual workflow creation and the Planner, so both meet the same bar.
-    """
-    errors = validate_plan(tasks, task_agent_types(), get_settings().max_plan_tasks)
+def validate_task_graph(tasks: Sequence[TaskLike], loops: Sequence[Any] = ()) -> None:
+    """Run the DAG rules (app.core.dag.validate_plan + validate_adaptive). Raises ValidationFailedError listing ALL
+    errors. Shared by manual workflow creation and the Planner, so both meet the same bar."""
+    settings = get_settings()
+    errors = validate_plan(tasks, task_agent_types(), settings.max_plan_tasks)
+    if not errors:
+        errors = validate_adaptive(tasks, loops, settings.max_loop_iterations)
     if errors:
         messages = [e.message for e in errors]
         raise ValidationFailedError("; ".join(messages), details=messages)
@@ -84,6 +86,9 @@ def build_tasks(workflow_id: uuid.UUID, specs: Sequence[TaskCreate]) -> list[Tas
             input=spec.input,
             requires_approval=spec.requires_approval,
             max_attempts=spec.max_attempts,
+            run_if=getattr(spec, "run_if", None),
+            join=getattr(spec, "join", "all_succeeded") or "all_succeeded",
+            replan_if=getattr(spec, "replan_if", None),
             created_at=base_time + timedelta(microseconds=index),
             updated_at=base_time,
         )
@@ -114,8 +119,10 @@ def record_task_created_events(
 async def create_workflow(session: AsyncSession, data: WorkflowCreate) -> Workflow:
     """Create a workflow, its tasks and dependency edges in ONE transaction, plus events."""
     if data.tasks:  # goal-only workflows (no tasks) are planned later
-        validate_task_graph(data.tasks)
+        validate_task_graph(data.tasks, data.loops)
         enforce_sensitive_policy(data.tasks)
+    elif data.loops:
+        raise ValidationFailedError("loops need tasks (or let the planner add them)")
 
     context = dict(data.context)
     if data.run and data.constraints:  # kept for the engine's background planner
@@ -138,6 +145,13 @@ async def create_workflow(session: AsyncSession, data: WorkflowCreate) -> Workfl
         # Flush the workflow + tasks first so task.created events (FK to tasks) insert after.
         await session.flush()
         record_task_created_events(session, data.tasks, tasks)
+        if tasks:
+            await init_adaptive(session, workflow, tasks, data.loops, replan_on_failure=data.replan_on_failure,
+                                created_by="human", memory=data.memory.model_dump() if data.memory else None,
+                                plan={"tasks": [t.model_dump() for t in data.tasks],
+                                      "loops": [lp.model_dump(by_alias=True) for lp in data.loops]})
+        elif data.memory is not None:
+            workflow.context = {**(workflow.context or {}), "memory": data.memory.model_dump()}
         await session.commit()
     except Exception:
         await session.rollback()

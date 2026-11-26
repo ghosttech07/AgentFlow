@@ -9,6 +9,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.core.adaptive_spec import LoopSpec, MemorySwitch
 from app.core.enums import WorkflowStatus
 from app.core.state_machine import allowed_controls
 from app.db.base import utcnow
@@ -67,6 +68,10 @@ class WorkflowCreate(BaseModel):
         description="If true, return 202 at once; the engine plans (if no tasks) and runs it.",
     )
     budget: Budget | None = Field(default=None, description="Cost/token/call/duration limits (Part 8).")
+    # Part 10 (manual plans; the planner sets these itself)
+    loops: list[LoopSpec] = Field(default_factory=list, description="Bounded feedback loops over task chains.")
+    replan_on_failure: bool = Field(default=False, description="Let the planner add tasks when a task fails for good.")
+    memory: MemorySwitch | None = Field(default=None, description="Read/write memory from earlier workflows.")
 
 
 class WorkflowRead(BaseModel):

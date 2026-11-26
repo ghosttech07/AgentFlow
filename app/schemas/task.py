@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -34,6 +34,10 @@ class TaskCreate(BaseModel):
     depends_on: list[str] = Field(
         default_factory=list, description="Keys of tasks in the same request."
     )
+    # Part 10: conditional branches and re-plan triggers (see app/core/conditions.py)
+    run_if: str | None = Field(default=None, max_length=300)
+    join: Literal["all_succeeded", "any_succeeded", "all_done"] = "all_succeeded"
+    replan_if: str | None = Field(default=None, max_length=300)
 
 
 class TaskRead(BaseModel):
@@ -62,11 +66,20 @@ class TaskRead(BaseModel):
     updated_at: datetime
     started_at: datetime | None
     completed_at: datetime | None
+    loop_name: str | None = None
+    iteration: int = 1
+    base_key: str | None = None
+    run_if: str | None = None
+    join: str = "all_succeeded"
+    replan_if: str | None = None
+    skip_reason: str | None = None
 
     @classmethod
     def from_model(cls, task: Task) -> TaskRead:
         """Build from an ORM Task whose `dependencies` relationship is already loaded."""
         return cls(
+            loop_name=task.loop_name, iteration=task.iteration or 1, base_key=task.base_key, run_if=task.run_if,
+            join=task.join or "all_succeeded", replan_if=task.replan_if, skip_reason=task.skip_reason,
             id=task.id,
             workflow_id=task.workflow_id,
             key=task.key,

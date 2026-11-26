@@ -162,6 +162,17 @@ async def list_task_attempts(
     return [AttemptRead.model_validate(r) for r in rows]
 
 
+@router.get("/{workflow_id}/plan-versions", responses=NOT_FOUND)
+async def list_plan_versions(workflow_id: uuid.UUID, session: AsyncSession = Depends(get_session)) -> list[dict[str, Any]]:
+    """Every version of the plan (1 = the original; later = re-plan patches, incl. proposed/rejected ones)."""
+    from app.services.graph_service import list_plan_versions as _list
+
+    await workflow_service.get_workflow(session, workflow_id)
+    return [{"version": v.version, "status": v.status, "trigger": v.trigger, "reason": v.reason, "patch": v.patch,
+             "created_by": v.created_by, "approved_by": v.approved_by, "created_at": v.created_at.isoformat(),
+             "applied_at": v.applied_at.isoformat() if v.applied_at else None} for v in await _list(session, workflow_id)]
+
+
 @router.get("/{workflow_id}/tasks/{key}/tool-calls", responses=NOT_FOUND)
 async def list_task_tool_calls(
     workflow_id: uuid.UUID, key: str, session: AsyncSession = Depends(get_session)
