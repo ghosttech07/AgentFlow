@@ -11,7 +11,7 @@
 
 :root {
   --bg: #f7f7f5; --side: #efefec; --surface: #ffffff; --raised: #ffffff;
-  --ink: #1b1c1e; --ink-2: #55585e; --ink-3: #6f737a; --line: #e2e2de; --line-2: #d3d3ce;
+  --ink: #1b1c1e; --ink-2: #4f5258; --ink-3: #5c6067; --line: #e2e2de; --line-2: #d3d3ce;
   --accent: #0d6b5f; --accent-ink: #ffffff; --accent-soft: #e3f1ee; --accent-text: #0b5c52;
   --ok: #1d7a45; --warn: #9a5b00; --bad: #b42318; --warn-soft: #fff4e0; --bad-soft: #fdecea;
   --shadow: 0 1px 2px rgb(16 18 20 / .06), 0 8px 24px -12px rgb(16 18 20 / .14);
@@ -29,7 +29,7 @@
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; }
-body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.55 var(--sans); -webkit-font-smoothing: antialiased; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.55 var(--sans); -webkit-font-smoothing: antialiased; }
 ::selection { background: var(--accent-soft); color: var(--ink); }
 a { color: var(--accent-text); text-underline-offset: 3px; }
 button, input, textarea { font: inherit; color: inherit; }
@@ -85,7 +85,7 @@ main { overflow-y: auto; min-width: 0; display: flex; flex-direction: column; }
 .modes button { border: 0; background: none; padding: 5px 12px; border-radius: 999px; font-size: 13px; font-weight: 600; color: var(--ink-2); cursor: pointer; }
 .modes button[aria-pressed="true"] { background: var(--surface); color: var(--ink); box-shadow: 0 1px 2px rgb(0 0 0 / .12); }
 .spacer { flex: 1; }
-.iconbtn { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 50%; border: 1px solid transparent; background: none; cursor: pointer; color: var(--ink-2); }
+.iconbtn { width: 40px; height: 40px; display: grid; place-items: center; border-radius: 50%; border: 1px solid transparent; background: none; cursor: pointer; color: var(--ink-2); }
 .iconbtn:hover { background: color-mix(in srgb, var(--ink) 7%, transparent); color: var(--ink); }
 .send { background: var(--accent); color: var(--accent-ink); }
 .send:hover { background: color-mix(in srgb, var(--accent) 88%, black); color: var(--accent-ink); }
@@ -139,7 +139,7 @@ a.cite { font-size: 12px; font-weight: 700; text-decoration: none; background: v
 .tools li { border: 0; padding: 3px 0; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
 .tools .tn { font-weight: 600; color: var(--ink); }
 .tools .ta { color: var(--ink-3); overflow-wrap: anywhere; }
-.badge { font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 99px; background: var(--bg); border: 1px solid var(--line); }
+.badge { font-size: 12px; font-weight: 700; padding: 1px 7px; border-radius: 99px; background: var(--bg); border: 1px solid var(--line); }
 .badge.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
 .badge.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); }
 .badge.ok { color: var(--ok); }
@@ -176,10 +176,18 @@ details.more summary { cursor: pointer; font-weight: 600; color: var(--ink-2); f
 #toast.on { opacity: 1; transform: translateX(-50%) translateY(0); }
 #toast.bad { background: var(--bad); color: #fff; }
 
+@media (pointer: coarse) {
+  .iconbtn { width: 44px; height: 44px; }
+  .modes button, .btn, .chips button, .newbtn { min-height: 44px; }
+  .hitem { min-height: 48px; }
+}
+.scrim { display: none; }
+
 @media (max-width: 860px) {
   .app { grid-template-columns: minmax(0, 1fr); }
   aside.side { position: fixed; inset: 0 auto 0 0; width: min(300px, 86vw); z-index: 15; transform: translateX(-102%); transition: transform .25s cubic-bezier(.2, .8, .2, 1); box-shadow: var(--shadow); }
   body.menu aside.side { transform: none; }
+  body.menu .scrim { display: block; position: fixed; inset: 0; background: rgb(0 0 0 / .4); z-index: 14; }
   .topbar { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg); z-index: 5; }
   .topbar .wordmark { font-size: 22px; }
   .home h2 { font-size: 42px; }
@@ -218,7 +226,7 @@ details.more summary { cursor: pointer; font-weight: 600; color: var(--ink-2); f
   </aside>
 
   <main id="main">
-    <div class="topbar"><button class="iconbtn" id="menubtn" type="button" aria-label="Open history"><svg class="i"><use href="#i-menu"/></svg></button>
+    <div class="topbar"><button class="iconbtn" id="menubtn" type="button" aria-label="Open history" aria-controls="side" aria-expanded="false"><svg class="i"><use href="#i-menu"/></svg></button>
       <span class="wordmark">AgentFlow</span></div>
     <div id="content" class="col"></div>
     <div class="dock col" id="dock">
@@ -239,6 +247,7 @@ details.more summary { cursor: pointer; font-weight: 600; color: var(--ink-2); f
     </div>
   </main>
 </div>
+<div class="scrim" id="scrim" aria-hidden="true"></div>
 <div id="toast" role="status" aria-live="polite"></div>
 <div class="sr" id="announcer" aria-live="polite"></div>
 
@@ -367,7 +376,14 @@ function parseHash() {
 }
 window.addEventListener("popstate", () => go(parseHash(), false));
 $("newbtn").onclick = () => { go({ kind: "home" }); $("question").focus(); };
-$("menubtn").onclick = () => document.body.classList.toggle("menu");
+function setMenu(open) {
+  document.body.classList.toggle("menu", open);
+  $("menubtn").setAttribute("aria-expanded", String(open));
+  if (open) $("newbtn").focus(); else if (document.activeElement && $("side").contains(document.activeElement)) $("menubtn").focus();
+}
+$("menubtn").onclick = () => setMenu(!document.body.classList.contains("menu"));
+$("scrim").onclick = () => setMenu(false);
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && document.body.classList.contains("menu")) setMenu(false); });
 
 function render() {
   $("content").classList.toggle("home", route.kind === "home");
