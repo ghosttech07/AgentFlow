@@ -139,6 +139,22 @@ async def schedule_workflow(
 
     # Expired approvals fail their task (approval_expired); the failure rule below fails the workflow.
     changes = await approval_service.expire_due(session, wf, tasks)
+    if wf.status == WorkflowStatus.FAILED:  # a workflow-level approval expired
+        await session.commit()
+        return changes + 1
+
+    # Feedback loops (Part 10): evaluate `until` / expand the next iteration BEFORE completion and promotion, so
+    # nothing downstream of an open loop runs early and a finished first iteration never completes the workflow.
+    if (wf.context or {}).get("loops"):
+        loop_changes = await _advance_loops(session, wf, tasks, settings)
+        if wf.status == WorkflowStatus.FAILED:
+            await session.commit()
+            return changes + 1
+        if loop_changes:
+            changes += loop_changes
+            tasks = list((await session.scalars(
+                select(Task).where(Task.workflow_id == workflow_id).options(selectinload(Task.dependencies))
+                .order_by(Task.created_at, Task.key).execution_options(populate_existing=True))).all())
 
     # Failure: stop scheduling, but leave PENDING tasks untouched (Part 5 resumes them)
     # and let running siblings finish and save their output.
@@ -154,8 +170,8 @@ async def schedule_workflow(
         logger.warning("workflow.failed id=%s failed_tasks=%s", wf.id, [t.key for t in failed])
         return changes + 1
 
-    if tasks and all(t.status in DONE_OK or (t.status == TaskStatus.FAILED and tolerated_failure(t, tasks))
-                     for t in tasks):
+    if tasks and not _loops_open(wf) and all(
+            t.status in DONE_OK or (t.status == TaskStatus.FAILED and tolerated_failure(t, tasks)) for t in tasks):
         if wf.status == WorkflowStatus.AWAITING_APPROVAL:  # not reachable normally; keep it valid anyway
             await transition_workflow(session, wf, WorkflowStatus.RUNNING)
         await _complete(session, wf, tasks)
@@ -174,7 +190,7 @@ async def schedule_workflow(
     now = utcnow()
     for t in tasks:
         # Promote PENDING tasks per their join rule (Part 10; default: all dependencies succeeded), then run_if.
-        if t.status == TaskStatus.PENDING:
+        if t.status == TaskStatus.PENDING and not _blocked_by_open_loop(wf, t):
             changes += await _promote(session, t)
         # Retry: a RETRYING task whose backoff has elapsed becomes READY again.
         elif t.status == TaskStatus.RETRYING and (t.next_attempt_at is None or t.next_attempt_at <= now):
@@ -196,7 +212,7 @@ async def schedule_workflow(
 
     # Independent branches keep running; the workflow is AWAITING_APPROVAL only while nothing
     # can run and at least one approval is pending.
-    waiting = any(t.status == TaskStatus.AWAITING_APPROVAL for t in tasks)
+    waiting = any(t.status == TaskStatus.AWAITING_APPROVAL for t in tasks) or _loops_open(wf, "awaiting_human")
     if wf.status == WorkflowStatus.RUNNING and waiting and not can_progress(tasks, now):
         await transition_workflow(
             session, wf, WorkflowStatus.AWAITING_APPROVAL, event_type=EventType.WORKFLOW_AWAITING_APPROVAL,
@@ -214,6 +230,139 @@ async def schedule_workflow(
     return changes
 
 
+OPEN_LOOP = ("open", "awaiting_human", "expand_pending", "choose_best")
+
+
+def _loops_open(wf: Workflow, *statuses: str) -> bool:
+    wanted = statuses or OPEN_LOOP
+    return any(s.get("status") in wanted for s in (wf.context or {}).get("loops", {}).values())
+
+
+def _blocked_by_open_loop(wf: Workflow, t: Task) -> bool:
+    """A task downstream of a loop waits until that loop has decided (ruling 5); body tasks are not blocked."""
+    loops = (wf.context or {}).get("loops", {})
+    return any(d.loop_name and d.loop_name != t.loop_name and loops.get(d.loop_name, {}).get("status") in OPEN_LOOP
+               for d in t.dependencies)
+
+
+async def _advance_loops(session: AsyncSession, wf: Workflow, tasks: list[Task], settings: Settings) -> int:
+    from app.core.adaptive_spec import LoopSpec
+    from app.services import graph_service
+
+    changes = 0
+    for name, state in list((wf.context or {}).get("loops", {}).items()):
+        spec = LoopSpec.model_validate(state["spec"])
+        k = int(state.get("iteration", 1))
+        status = state.get("status")
+        if status == "expand_pending":
+            await graph_service.expand_loop(session, wf, tasks, name, k + 1)
+            _set_loop(wf, name, status="open")
+            changes += 1
+            continue
+        if status == "choose_best":
+            await _choose_best(session, wf, tasks, spec, k, state.get("reason", "approved by a human"))
+            changes += 1
+            continue
+        if status != "open":
+            continue
+        current = graph_service.iteration_tasks(tasks, name, k)
+        last = current.get(spec.body[-1])
+        if last is None or last.status != TaskStatus.SUCCEEDED or len(current) != len(spec.body):
+            continue
+        outputs = graph_service.iteration_outputs(tasks, name, k)
+        try:
+            done, values = parse_condition(spec.until).evaluate(outputs)
+            reason = None
+        except (ConditionError, ConditionSyntaxError) as exc:
+            done, values, reason = False, {}, f"condition_error: until could not be evaluated ({exc})"
+        record_event(session, workflow_id=wf.id, event_type=EventType.LOOP_CONDITION_EVALUATED,
+                     payload={"loop": name, "iteration": k, "expression": spec.until, "result": done, "values": values,
+                              **({"error": reason} if reason else {})})
+        changes += 1
+        if done:
+            _set_loop(wf, name, status="done", chosen_iteration=k)
+            record_event(session, workflow_id=wf.id, event_type=EventType.LOOP_COMPLETED,
+                         payload={"loop": name, "iteration": k})
+            continue
+        if reason is None:
+            reason = await _iteration_blocker(session, wf, tasks, spec, k, settings)
+        if reason is None:
+            await graph_service.expand_loop(session, wf, tasks, name, k + 1)
+            continue
+        await _exhausted(session, wf, tasks, spec, k, reason)
+    return changes
+
+
+async def _iteration_blocker(session: AsyncSession, wf: Workflow, tasks: list[Task], spec: Any, k: int,
+                             settings: Settings) -> str | None:
+    """Why another iteration may not start (None = it may)."""
+    state = wf.context["loops"][spec.name]
+    if k >= spec.max_iterations + int(state.get("extra_iterations", 0)):
+        return f"max_iterations reached ({k})"
+    eff = budget_service.effective_budget(wf.budget, settings)
+    extra_done = sum(int(s.get("iteration", 1)) - 1 for s in wf.context["loops"].values())
+    if eff.get("max_iterations_total") is not None and extra_done >= eff["max_iterations_total"]:
+        return f"budget: max_iterations_total={eff['max_iterations_total']} reached"
+    if eff.get("max_llm_calls") is not None:
+        from app.models.usage import LLMCall
+
+        ids = [t.id for t in tasks if t.loop_name == spec.name and (t.iteration or 1) == k]
+        per_iteration = await session.scalar(select(func.count()).select_from(LLMCall).where(LLMCall.task_id.in_(ids)))
+        used = (await budget_service.get_usage(session, wf)).llm_calls
+        if used + int(per_iteration or 0) > eff["max_llm_calls"]:
+            return f"budget: another iteration (~{per_iteration} LLM calls) would cross max_llm_calls={eff['max_llm_calls']}"
+    return None
+
+
+def _set_loop(wf: Workflow, name: str, **values: Any) -> None:
+    loops = dict(wf.context.get("loops", {}))
+    loops[name] = {**loops[name], **values}
+    wf.context = {**wf.context, "loops": loops}
+
+
+async def _exhausted(session: AsyncSession, wf: Workflow, tasks: list[Task], spec: Any, k: int, reason: str) -> None:
+    mode = spec.on_exhausted
+    if mode == "fail":
+        _set_loop(wf, spec.name, status="exhausted", reason=reason)
+        record_event(session, workflow_id=wf.id, event_type=EventType.LOOP_EXHAUSTED,
+                     payload={"loop": spec.name, "iteration": k, "mode": mode, "reason": reason})
+        wf.error = f"Loop '{spec.name}' ended without meeting its condition ({reason})"
+        await transition_workflow(session, wf, WorkflowStatus.FAILED, event_type=EventType.WORKFLOW_FAILED,
+                                  reason=wf.error)
+        return
+    if mode == "ask_human":
+        _set_loop(wf, spec.name, status="awaiting_human", reason=reason)
+        await approval_service.request_loop_approval(session, wf, spec, k, reason, tasks)
+        record_event(session, workflow_id=wf.id, event_type=EventType.LOOP_EXHAUSTED,
+                     payload={"loop": spec.name, "iteration": k, "mode": mode, "reason": reason})
+        return
+    await _choose_best(session, wf, tasks, spec, k, reason)
+
+
+async def _choose_best(session: AsyncSession, wf: Workflow, tasks: list[Task], spec: Any, k: int, reason: str) -> None:
+    from app.services import graph_service
+
+    expr = spec.best_by or f"{spec.feedback.from_}.output.score"
+    scores: dict[int, Any] = {}
+    try:
+        cond = parse_condition(expr)
+        for i in range(1, k + 1):
+            scores[i] = cond.value(graph_service.iteration_outputs(tasks, spec.name, i))
+        chosen = max(scores, key=lambda i: (scores[i], i))
+    except (ConditionError, ConditionSyntaxError, TypeError) as exc:
+        chosen = k
+        reason = f"{reason}; best_by could not be evaluated ({exc}), using the latest finished iteration"
+    if chosen != k:
+        old_last = graph_service.iteration_tasks(tasks, spec.name, k)[spec.body[-1]]
+        new_last = graph_service.iteration_tasks(tasks, spec.name, chosen)[spec.body[-1]]
+        body_ids = {t.id for t in tasks if t.loop_name == spec.name}
+        await graph_service.rewire_dependents(session, tasks, old_last, new_last, exclude=body_ids)
+    _set_loop(wf, spec.name, status="done", chosen_iteration=chosen, reason=reason)
+    record_event(session, workflow_id=wf.id, event_type=EventType.LOOP_EXHAUSTED,
+                 payload={"loop": spec.name, "iteration": k, "mode": "continue_with_best", "chosen_iteration": chosen,
+                          "scores": {str(i): v for i, v in scores.items()}, "reason": reason})
+
+
 def tolerated_failure(task: Task, tasks: list[Task]) -> bool:
     """A failed task is tolerated when every task that depends on it accepts a failed dependency (Part 10)."""
     dependents = [t for t in tasks if any(d.id == task.id for d in t.dependencies)]
@@ -221,7 +370,12 @@ def tolerated_failure(task: Task, tasks: list[Task]) -> bool:
 
 
 def condition_outputs(deps: list[Task]) -> dict[str, dict[str, Any]]:
-    return {d.key: {"output": d.output, "status": str(d.status)} for d in deps}
+    """Outputs by key; a loop iteration also answers to its base key (review_guide -> review_guide__v2)."""
+    out = {d.key: {"output": d.output, "status": str(d.status)} for d in deps}
+    for d in deps:
+        if d.base_key and d.base_key not in out:
+            out[d.base_key] = out[d.key]
+    return out
 
 
 async def _promote(session: AsyncSession, t: Task) -> int:
@@ -253,6 +407,14 @@ async def _promote(session: AsyncSession, t: Task) -> int:
     return 1
 
 
+def _chosen(wf: Workflow, t: Task) -> bool:
+    """Loop body tasks count only from the chosen (final) iteration; earlier drafts stay in the history."""
+    if not t.loop_name:
+        return True
+    state = (wf.context or {}).get("loops", {}).get(t.loop_name, {})
+    return (t.iteration or 1) == (state.get("chosen_iteration") or state.get("iteration", 1))
+
+
 async def _complete(session: AsyncSession, wf: Workflow, tasks: list[Task]) -> None:
     nodes = [TaskNode(key=t.key, agent_type=t.agent_type, depends_on=[d.key for d in t.dependencies])
              for t in tasks]
@@ -264,7 +426,8 @@ async def _complete(session: AsyncSession, wf: Workflow, tasks: list[Task]) -> N
     failed_branches = [{"key": t.key, "error_type": t.error_type, "error": t.error}
                        for t in tasks if t.status == TaskStatus.FAILED]  # only tolerated ones reach completion
     wf.result = {
-        "final_outputs": {k: by_key[k].output for k in leaves(nodes) if by_key[k].status == TaskStatus.SUCCEEDED},
+        "final_outputs": {k: by_key[k].output for k in leaves(nodes) if by_key[k].status == TaskStatus.SUCCEEDED
+                          and _chosen(wf, by_key[k])},
         "summary": (wf.context or {}).get("plan_summary"),
         "skipped": [t.key for t in tasks if t.status == TaskStatus.SKIPPED],
         **({"failed_branches": failed_branches} if failed_branches else {}),

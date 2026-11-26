@@ -67,7 +67,7 @@ class ApprovalRead(BaseModel):
 
     id: uuid.UUID
     workflow_id: uuid.UUID
-    task_id: uuid.UUID
+    task_id: uuid.UUID | None  # None for workflow-level approvals (loop_exhausted, plan_patch)
     status: str
     requested_at: datetime
     expires_at: datetime | None

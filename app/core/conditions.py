@@ -68,6 +68,15 @@ class Condition:
     def __init__(self, expr: str, tree: ast.Expression, refs: set[str]) -> None:
         self.expr, self.tree, self.refs = expr, tree, refs
 
+    def value(self, outputs: dict[str, dict[str, Any] | None]) -> Any:
+        """The raw result (e.g. a score for best_by)."""
+        try:
+            return self._eval(self.tree.body, outputs, {})
+        except ConditionError:
+            raise
+        except (TypeError, ValueError, ZeroDivisionError, ArithmeticError, IndexError, KeyError) as exc:
+            raise ConditionError(f"could not evaluate {self.expr!r}: {type(exc).__name__}: {exc}") from exc
+
     def evaluate(self, outputs: dict[str, dict[str, Any] | None]) -> tuple[bool, dict[str, Any]]:
         values: dict[str, Any] = {}
         try:

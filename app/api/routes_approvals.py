@@ -50,7 +50,8 @@ async def approve(
                                               input_overrides=body.input_overrides,
                                               arguments_overrides=body.arguments_overrides,
                                               allow_recipient_override=body.allow_recipient_override,
-                                              confirm_duplicate=body.confirm_duplicate)
+                                              confirm_duplicate=body.confirm_duplicate,
+                                              extra_iterations=body.extra_iterations)
     if engine:
         engine.wake()
     return ApprovalRead.model_validate(approval)
