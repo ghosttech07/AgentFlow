@@ -139,6 +139,31 @@ events with diffs, memory hits; summary adds iterations, replans, memory hits, e
 Dashboard: grouped versions in the steps list and Gantt, skipped-by-condition reason, plan version history with
 diffs, approval cards for `plan_patch` and `loop_exhausted`, a Memory page in the sidebar.
 
+## Builder-check rulings (my calls)
+1. **Memory schema** (from the user's prompt): `memories(id uuid, namespace text default 'default', kind fact|lesson|
+   artifact_summary, content text, data jsonb, sources jsonb (verified URLs), source_workflow_id, source_task_key,
+   tainted bool, private bool, confidence text, created_at, expires_at, pinned bool, deleted_at, search_vector
+   tsvector GENERATED + GIN)`. `namespace` is stored now and only filtered on; Part 11 maps it to users/teams.
+2. **Join-aware failure.** A FAILED task fails the workflow unless every one of its dependents uses
+   `any_succeeded` or `all_done` (then the failure is tolerated: those dependents treat it as "done, not
+   succeeded"). A failed leaf always fails. `all_done` = every dependency finished (SUCCEEDED, SKIPPED or FAILED);
+   `any_succeeded` = at least one SUCCEEDED once all are finished. Replan trigger (a) fires only for failures that
+   would fail the workflow.
+3. **Pending plan_patch.** Migration makes `approvals.task_id` nullable (the one-pending-per-task index still
+   applies to task-bound rows). The workflow stays `REPLANNING` while a patch waits; the unapplied patch is a
+   `plan_versions` row with `status=proposed` (applied / rejected / failed later). From REPLANNING only cancel is
+   allowed (pause is refused with 409); recovery returns a REPLANNING workflow with a proposed patch to
+   REPLANNING-awaiting-approval (nothing to redo), otherwise to RUNNING and re-triggers the replan.
+4. **Final outputs after loops.** `workflow.context.loops[<name>] = {iteration, status: open|done|exhausted,
+   chosen_iteration}`. `final_outputs` excludes body tasks of non-chosen iterations; the timeline marks them
+   "earlier draft". SUCCEEDED tasks are never changed.
+5. **Ordering.** A task that depends on a loop body task is not promoted while that loop is `open`; the scheduler
+   evaluates `until` (and expands) before promotion in the same locked transaction; the loop state lives in the DB,
+   so a crash between "body succeeded" and "evaluated" is re-evaluated on the next tick (expansion is idempotent).
+6. **condition_error.** `run_if` error -> that task FAILED (`condition_error`, not retried). `until` error -> the
+   loop is treated as exhausted with reason `condition_error` (on_exhausted applies). `replan_if` error -> no replan,
+   event `task.condition_evaluated {error}`. A condition_error never triggers a replan by itself.
+
 ## Sequence: loop expansion
 ```mermaid
 sequenceDiagram
