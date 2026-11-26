@@ -293,6 +293,8 @@ async def _advance_loops(session: AsyncSession, wf: Workflow, tasks: list[Task],
                               **({"error": reason} if reason else {})})
         changes += 1
         if done:
+            if k > 1:
+                await _lesson(session, wf, tasks, spec, k)
             _set_loop(wf, name, status="done", chosen_iteration=k)
             record_event(session, workflow_id=wf.id, event_type=EventType.LOOP_COMPLETED,
                          payload={"loop": name, "iteration": k})
@@ -325,6 +327,16 @@ async def _iteration_blocker(session: AsyncSession, wf: Workflow, tasks: list[Ta
         if used + int(per_iteration or 0) > eff["max_llm_calls"]:
             return f"budget: another iteration (~{per_iteration} LLM calls) would cross max_llm_calls={eff['max_llm_calls']}"
     return None
+
+
+async def _lesson(session: AsyncSession, wf: Workflow, tasks: list[Task], spec: Any, k: int) -> None:
+    from app.services import graph_service, memory_service
+
+    reviews = []
+    for i in range(1, k + 1):
+        reviewer = graph_service.iteration_tasks(tasks, spec.name, i).get(spec.feedback.from_)
+        reviews.append((reviewer.output if reviewer else None) or {})
+    await memory_service.write_lesson(session, wf, reviews)
 
 
 def _set_loop(wf: Workflow, name: str, **values: Any) -> None:
@@ -478,6 +490,9 @@ async def _complete(session: AsyncSession, wf: Workflow, tasks: list[Task]) -> N
         "skipped": [t.key for t in tasks if t.status == TaskStatus.SKIPPED],
         **({"failed_branches": failed_branches} if failed_branches else {}),
     }
+    from app.services import memory_service
+
+    await memory_service.write_artifact_summary(session, wf)
     if failed_branches:  # completed, but must not look clean
         record_event(session, workflow_id=wf.id, event_type=EventType.WORKFLOW_COMPLETED_WITH_FAILED_BRANCHES,
                      payload={"failed_branches": failed_branches})

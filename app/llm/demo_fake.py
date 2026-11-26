@@ -113,6 +113,14 @@ def tool_step(output_model: Any, prompt: str) -> dict[str, Any]:
     done, goal = _steps_done(prompt), _goal(prompt)
     malicious = "malicious" in goal.lower()
     if output_model is ResearchOutput:
+        facts = re.findall(r"^- \[fact, [^\]]*\] (.+?)(?: \(sources: ([^)]*)\))?$", prompt, re.M)
+        if not done and facts:  # PRIOR KNOWLEDGE covers it: answer from memory, no searches (Part 10)
+            texts = [f[0] for f in facts[:6]]
+            urls = sorted({u.strip() for f in facts for u in (f[1] or "").split(",") if u.strip()})
+            return _final({"summary": "[demo] Answered from earlier verified research [1].",
+                           "key_findings": (texts * 3)[:max(3, len(texts))], "from_memory": texts,
+                           "sources": [{"title": "earlier research", "url": u} for u in urls[:5]],
+                           "confidence": "high", "gaps": []})
         if not done:
             return _tool_call("web_search", "Find recent articles", query="malicious ev page" if malicious else "India EV sales 2026")
         if len(done) == 1:

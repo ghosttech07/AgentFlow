@@ -28,6 +28,7 @@ from app.api import (
     routes_dev,
     routes_engine,
     routes_health,
+    routes_memory,
     routes_plans,
     routes_providers,
     routes_tools,
@@ -152,6 +153,7 @@ def create_app() -> FastAPI:
     app.include_router(routes_ask.router)
     app.include_router(routes_providers.router)
     app.include_router(routes_tools.router)
+    app.include_router(routes_memory.router)
     app.include_router(routes_approvals.router)
     app.include_router(routes_dashboard.router)
     app.include_router(routes_dev.router)

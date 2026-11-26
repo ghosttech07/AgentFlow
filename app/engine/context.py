@@ -22,7 +22,15 @@ async def build_agent_input(session: AsyncSession, task_id: uuid.UUID) -> tuple[
     )
     if task is None:
         raise NotFoundError(f"Task {task_id} not found")
+    from app.services import memory_service
+
+    memories = await memory_service.for_task(session, task.workflow, task)
     return task, AgentInput(
+        prior_knowledge=memory_service.as_prompt(memories) if memories else None,
+        memory_ids=[str(m.id) for m in memories],
+        memory_tainted=any(m.tainted for m in memories),
+        memory_private=any(m.private for m in memories),
+        memory_sources=[s.get("url") for m in memories if m.kind == "fact" for s in (m.sources or []) if s.get("url")],
         workflow_goal=task.workflow.goal,
         workflow_id=str(task.workflow_id),
         task_key=task.key,

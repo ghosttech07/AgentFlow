@@ -74,6 +74,7 @@ class ToolRuntime:
     inherited_sources: list[str] = field(default_factory=list)
     inherited_warnings: list[str] = field(default_factory=list)
     private_context: bool = False  # the task starts holding private data (e.g. a private memory; Part 10)
+    memory_sources: list[str] = field(default_factory=list)  # verified URLs of memory facts in the prompt
     resume: ResumeInfo | None = None
 
 
@@ -108,10 +109,12 @@ class LoopReport:
     route_position: int = 0
 
     sources_verified: dict[str, Any] | None = None  # set by the researcher's code check
+    private: bool = False  # the attempt read private data (sql/file/private memory)
     calls: list[dict[str, Any]] = field(default_factory=list)  # every step (tool, status, arguments, result, ...)
 
     def summary(self) -> dict[str, Any]:
         out = {"steps": self.steps, "tool_calls": self.tool_calls, "invalid_steps": self.invalid_steps,
+               "private": self.private,
                "reused": self.reused, "tainted": self.tainted, "by_tool": self.by_tool,
                "untrusted_sources": self.untrusted_sources[:20], "injection_warnings": self.injection_warnings}
         if self.sources_verified is not None:
@@ -171,6 +174,9 @@ class ToolLoop:
         self.private = rt.private_context
         self.private_tokens: set[str] = set()
         self.provenance: set[str] = urls_in(agent_input.task_input) | urls_in(agent_input.dependency_outputs)
+        # Memory facts were verified when stored: citing them is allowed, and their links count as seen.
+        self.report.seen_urls |= set(rt.memory_sources)
+        self.provenance |= {normalize_url(u) for u in rt.memory_sources}
 
     # ------------------------------------------------------------------ helpers
     def _options(self, tool: Tool) -> dict[str, Any]:
@@ -498,6 +504,7 @@ class ToolLoop:
             step = resp.data
             if step.action == "final" and step.output is not None:  # type: ignore[attr-defined]
                 self.report.tainted = self.state.tainted
+                self.report.private = self.private
                 self.report.untrusted_sources = list(self.state.untrusted_sources)
                 self.report.injection_warnings = list(self.state.injection_warnings)
                 self.report.calls = [{"tool": v.tool, "status": v.status, "arguments": v.arguments, "result": v.result,

@@ -20,6 +20,12 @@ class AgentInput(BaseModel):
     task_description: str = ""
     task_input: dict[str, Any] = Field(default_factory=dict)
     dependency_outputs: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    # Part 10 memory: prompt section + what it implies (taint / private data / verified sources)
+    prior_knowledge: str | None = None
+    memory_ids: list[str] = Field(default_factory=list)
+    memory_tainted: bool = False
+    memory_private: bool = False
+    memory_sources: list[str] = Field(default_factory=list)
 
 
 class AgentResult(BaseModel):
@@ -36,6 +42,7 @@ class AgentResult(BaseModel):
     route_position: int = 0
     tool_summary: dict[str, Any] | None = None  # Part 9: tool loop report (steps, calls, reused, taint)
     tainted: bool = False  # the attempt read untrusted content (downstream tasks start tainted)
+    memories_used: list[str] = Field(default_factory=list)  # Part 10: memory ids injected into the prompt
 
 
 class BaseAgent(ABC):
@@ -75,6 +82,12 @@ class BaseAgent(ABC):
         return self.settings.gemini_worker_model
 
     def build_user_prompt(self, agent_input: AgentInput) -> str:
+        prompt = self._task_prompt(agent_input)
+        if agent_input.prior_knowledge:
+            prompt += "\n\n" + agent_input.prior_knowledge
+        return prompt
+
+    def _task_prompt(self, agent_input: AgentInput) -> str:
         return build_task_prompt(
             workflow_goal=agent_input.workflow_goal,
             task_name=agent_input.task_name,
