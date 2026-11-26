@@ -106,6 +106,17 @@ async def test_openai_drops_reasoning_effort_for_models_that_reject_it() -> None
     assert "reasoning_effort" not in client.calls[1] and "reasoning_effort" not in client.calls[2]
 
 
+async def test_ollama_model_without_thinking_drops_reasoning_effort() -> None:
+    # Real Ollama 0.40 reply for llama3.2:3b when reasoning_effort is sent (captured live 2026-11-26).
+    rejected = openai_error(openai.BadRequestError, 400, {"error": {
+        "message": '"llama3.2:3b" does not support thinking', "type": "invalid_request_error", "param": None,
+        "code": None}})
+    client = FakeOpenAI(rejected, completion('{"answer": "a"}', Out(answer="a")))
+    r = await OpenAICompatProvider("ollama", client).generate("llama3.2:3b", "s", "u", Out, use_search=False,
+                                                              thinking_level="low")
+    assert r.data.answer == "a" and "reasoning_effort" not in client.calls[1]
+
+
 OPENAI_ERRORS = [
     (openai_error(openai.RateLimitError, 429, {"error": {"message": "Rate limit reached for requests",
                                                          "type": "requests", "code": "rate_limit_exceeded"}},

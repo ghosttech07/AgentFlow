@@ -69,7 +69,9 @@ class OpenAICompatProvider:
             request = self._client.chat.completions.parse(**kwargs)
             resp = await (asyncio.wait_for(request, self._timeout) if self._timeout else request)
         except openai.BadRequestError as exc:
-            if effort and "reasoning_effort" in str(exc):  # non-reasoning model: remember and resend
+            # Non-reasoning model (OpenAI: "unsupported parameter reasoning_effort"; Ollama: "does not
+            # support thinking"): remember it and resend without the parameter.
+            if effort and ("reasoning_effort" in str(exc) or "support thinking" in str(exc)):
                 self._no_reasoning.add(model)
                 logger.info("llm.reasoning_effort_unsupported provider=%s model=%s", self.name, model)
                 return await self._call(model, system_prompt, user_prompt, output_model, None, usage)

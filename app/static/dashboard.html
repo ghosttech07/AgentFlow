@@ -14,9 +14,9 @@
 
   :root {
     --ground: #e9edf1; --surface: #f8f9fb; --card: #fbf7ea; --card-line: #e4d8bb; --line: #d3d9e0;
-    --ink: #1d1f24; --muted: #555c67; --oak: #2b211b; --oak-2: #3d2f25; --on-oak: #f3ede3; --brass: #d2a457;
-    --brass-ink: #7d5a1c; /* call numbers on light card stock (brass is for the oak bar) */
-    --rule: #b3261e; --accent: #1f4e8c; --on-accent: #ffffff;
+    --ink: #1d1f24; --muted: #555c67; --oak: #2b211b; --oak-2: #44342a; --on-oak: #f3ede3; --brass: #d2a457;
+    --brass-ink: #7d5a1c; /* call numbers on light card stock (brass itself is for the oak bar) */
+    --rule: #b3261e; --link: #9a2a1f; --fill: #2b211b;
     --ok: #1d6b3a; --warn: #8a5a00; --bad: #b42318; --info: #1f4e8c; --idle: #5c6370;
     --f-head: "Libre Franklin", system-ui, sans-serif; --f-data: "Courier Prime", ui-monospace, monospace;
     --f-body: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -26,9 +26,8 @@
   @media (prefers-color-scheme: dark) {
     :root {
       --ground: #121417; --surface: #191c21; --card: #211d16; --card-line: #3d3428; --line: #2d323a;
-      --ink: #e9e6e0; --muted: #aaa69d; --oak: #1a140f; --oak-2: #2b2119; --on-oak: #f0e8dc; --brass: #dcb064;
-      --brass-ink: #dcb064;
-      --rule: #e05a4e; --accent: #93b6ee; --on-accent: #0f1622;
+      --ink: #e9e6e0; --muted: #b0aca3; --oak: #33271f; --oak-2: #4a3a2e; --on-oak: #f3ebdf; --brass: #dcb064;
+      --brass-ink: #dcb064; --rule: #e05a4e; --link: #f09a8f; --fill: #dcb064;
       --ok: #62c48f; --warn: #e3ab4c; --bad: #f2806f; --info: #93b6ee; --idle: #9ba2ae;
       --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 8px 22px -12px rgba(0, 0, 0, .6);
       color-scheme: dark;
@@ -36,11 +35,11 @@
   }
   * { box-sizing: border-box; }
   html { -webkit-text-size-adjust: 100%; }
-  body { margin: 0; font: 14px/1.5 var(--f-body); background: var(--ground); color: var(--ink); caret-color: var(--accent); }
-  ::selection { background: color-mix(in srgb, var(--accent) 28%, transparent); }
-  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+  body { margin: 0; font: 14px/1.5 var(--f-body); background: var(--ground); color: var(--ink); caret-color: var(--rule); }
+  ::selection { background: color-mix(in srgb, var(--brass) 38%, transparent); }
+  :focus-visible { outline: 2px solid var(--brass-ink); outline-offset: 2px; border-radius: 3px; }
   * { scrollbar-color: color-mix(in srgb, var(--muted) 45%, transparent) transparent; scrollbar-width: thin; }
-  a { color: var(--accent); text-underline-offset: 3px; }
+  a { color: var(--link); text-underline-offset: 3px; }
   h1, h2, h3 { font-family: var(--f-head); margin: 0; letter-spacing: -0.01em; text-wrap: balance; }
   .data, .num { font-family: var(--f-data); font-variant-numeric: tabular-nums; }
   .muted { color: var(--muted); }
@@ -48,7 +47,7 @@
   svg.i { width: 14px; height: 14px; vertical-align: -2px; fill: none; stroke: currentColor; stroke-width: 1.8;
           stroke-linecap: round; stroke-linejoin: round; flex: none; }
 
-  /* ---------- controls */
+  /* ---------- controls (standard; the oak button is the primary action) */
   input, textarea, select { font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--line);
                             border-radius: var(--r); padding: 7px 9px; min-width: 0; }
   input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
@@ -57,8 +56,8 @@
            border-radius: var(--r); padding: 8px 12px; cursor: pointer; white-space: nowrap;
            transition: background-color .15s, border-color .15s, color .15s; }
   button:hover:not(:disabled) { border-color: color-mix(in srgb, var(--ink) 35%, var(--line)); }
-  button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
-  button.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 86%, var(--ink)); }
+  button.primary { background: var(--oak); border-color: var(--oak); color: var(--on-oak); }
+  button.primary:hover:not(:disabled) { background: var(--oak-2); border-color: var(--oak-2); }
   button.danger { color: var(--bad); }
   button:disabled { opacity: .45; cursor: not-allowed; }
   label.field { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
@@ -67,9 +66,9 @@
   .bar { background: var(--oak); color: var(--on-oak); display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
          padding: 10px 20px; position: sticky; top: 0; z-index: 3; box-shadow: 0 1px 0 rgba(0,0,0,.25); }
   .bar h1 { font-size: 18px; font-weight: 750; }
-  .bar .health { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12.5px; color: color-mix(in srgb, var(--on-oak) 80%, transparent); }
+  .bar .health { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12.5px; color: color-mix(in srgb, var(--on-oak) 82%, transparent); }
   .bar .health b { color: var(--brass); font-weight: 600; }
-  .bar .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; background: var(--idle); }
+  .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; background: #9ba2ae; }
   .dot.ok { background: #62c48f; } .dot.bad { background: #f2806f; } .dot.warn { background: #e3ab4c; }
   .bar .spacer { flex: 1; }
   .bar details { position: relative; }
@@ -82,37 +81,40 @@
 
   .wrap { max-width: 1440px; margin: 0 auto; padding: 18px 20px 40px; display: grid; gap: 18px; }
   .desk { display: grid; grid-template-columns: minmax(280px, 340px) minmax(0, 1fr); gap: 18px; align-items: start; }
-  @media (max-width: 900px) { .desk { grid-template-columns: minmax(0, 1fr); } }
+  @media (max-width: 900px) { .desk { grid-template-columns: minmax(0, 1fr); } #detail { order: -1; } }
   .stack { display: grid; gap: 18px; grid-template-columns: minmax(0, 1fr); align-content: start; }
 
   .panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 16px; min-width: 0; }
-  .panel > h2 { font-size: 13px; font-weight: 650; color: var(--muted); margin-bottom: 10px; }
+  .label { font: 700 12px/1.2 var(--f-head); letter-spacing: .01em; color: var(--ink); margin-bottom: 10px;
+           display: flex; align-items: center; gap: 8px; }
+  .label::after { content: ""; flex: 1; height: 1px; background: var(--line); }
 
-  /* ---------- the index card (signature) */
+  /* ---------- the index card (signature): manila stock, one catalog-red rule under the heading */
   .card { background: var(--card); border: 1px solid var(--card-line); border-radius: var(--r); box-shadow: var(--shadow);
-          position: relative; padding: 18px 18px 16px; min-width: 0; }
-  .card::before { content: ""; position: absolute; left: 18px; right: 18px; top: 50px; height: 1px; background: var(--rule); opacity: .75; }
-  .card .head { display: flex; align-items: baseline; gap: 12px; min-height: 30px; }
-  .card .head h2 { font-size: 19px; font-weight: 700; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+          padding: 16px 18px; min-width: 0; }
+  .card .head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 12px; padding-bottom: 10px;
+                border-bottom: 1px solid var(--rule); }
+  .card .head h2 { font-size: 19px; font-weight: 700; flex: 1 1 260px; min-width: 0; overflow-wrap: anywhere; }
+  .card .head .tags { display: flex; gap: 10px; align-items: baseline; }
   .callno { font: 700 12px/1 var(--f-data); color: var(--brass-ink); white-space: nowrap; }
-  .card .body { margin-top: 18px; }
+  .card .body { margin-top: 14px; }
 
   /* ---------- quick ask */
   .askrow { display: flex; gap: 10px; }
-  .askrow input { flex: 1; font-size: 16px; padding: 11px 13px; background: var(--surface); }
+  .askrow input { flex: 1; font-size: 16px; padding: 11px 13px; }
   .askrow button { padding: 0 18px; font-size: 14px; }
-  .answer { display: grid; grid-template-columns: minmax(0, 1fr) minmax(200px, 300px); gap: 22px; margin-top: 16px; }
+  .answer { display: grid; grid-template-columns: minmax(0, 72ch) minmax(200px, 300px); justify-content: start; gap: 28px; margin-top: 16px; }
   @media (max-width: 760px) { .answer { grid-template-columns: minmax(0, 1fr); } }
-  .answer .text { font-size: 15.5px; line-height: 1.65; max-width: 72ch; white-space: pre-wrap; }
-  .answer ul { margin: 12px 0 0; padding-left: 20px; max-width: 72ch; }
+  .answer .text { font-size: 15.5px; line-height: 1.65; white-space: pre-wrap; }
+  .answer ul { margin: 12px 0 0; padding-left: 20px; }
   .answer li { margin: 4px 0; }
   .cite { font: 700 11px/1 var(--f-data); vertical-align: super; text-decoration: none; padding: 0 1px; }
-  .tracings { border-left: 1px solid var(--card-line); padding-left: 16px; display: grid; gap: 10px; align-content: start; font-size: 13px; }
-  .tracings h3 { font: 650 12px/1.2 var(--f-head); color: var(--muted); }
+  .tracings { border-left: 1px solid var(--rule); padding-left: 16px; display: grid; gap: 10px; align-content: start; font-size: 13px; }
+  .tracings h3 { font: 700 12px/1.2 var(--f-head); color: var(--ink); }
   .tracing { display: grid; grid-template-columns: 2.2em 1fr; gap: 4px; }
   .tracing .n { font-family: var(--f-data); color: var(--rule); font-weight: 700; }
   .tracing a { overflow-wrap: anywhere; }
-  .tracing.uncited { opacity: .62; }
+  .tracing.uncited a { color: var(--muted); }
   .meta { font-size: 12px; color: var(--muted); margin-top: 12px; display: flex; flex-wrap: wrap; gap: 4px 14px; }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
   .chips button { font-weight: 500; font-size: 12.5px; padding: 6px 10px; border-radius: 999px; }
@@ -120,18 +122,18 @@
   @keyframes file-in { from { transform: translateY(6px); opacity: .001; } }
   @media (prefers-reduced-motion: reduce) { .filed { animation: none; } * { transition: none !important; } }
 
-  /* ---------- catalog list */
-  #list { max-height: 520px; overflow-y: auto; margin: 0 -6px; padding: 0 6px; }
-  @media (max-width: 900px) { #detail { order: -1; } #list { max-height: 360px; } }
+  /* ---------- new goal + catalog */
   .new-goal { display: grid; gap: 8px; }
   .new-goal .limits { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }
   .new-goal summary { cursor: pointer; font-size: 12.5px; color: var(--muted); }
-  .wf { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 10px; padding: 9px 10px; border-radius: var(--r);
-        cursor: pointer; border: 1px solid transparent; }
+  #list { max-height: 380px; overflow-y: auto; margin: 0 -6px; padding: 0 6px; }
+  .wf { display: grid; gap: 4px; padding: 9px 10px; border-radius: var(--r); cursor: pointer; border: 1px solid transparent;
+        border-bottom-color: var(--line); }
   .wf:hover { background: color-mix(in srgb, var(--ink) 4%, transparent); }
-  .wf[aria-current="true"] { border-color: var(--rule); background: var(--card); }
-  .wf .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .wf .sub { grid-column: 1 / -1; font-size: 12px; color: var(--muted); display: flex; gap: 10px; }
+  .wf[aria-current="true"] { background: var(--card); border-color: var(--card-line); box-shadow: inset 0 -2px 0 var(--rule); }
+  .wf .name { font-weight: 600; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .wf .sub { display: flex; align-items: baseline; gap: 10px; font-size: 12px; color: var(--muted); }
+  .wf .sub .pill { margin-left: auto; }
   .pill { display: inline-flex; align-items: center; font: 600 11px/1 var(--f-body); padding: 4px 7px; border-radius: 999px;
           white-space: nowrap; color: var(--st); background: color-mix(in srgb, var(--st) 13%, transparent);
           border: 1px solid color-mix(in srgb, var(--st) 30%, transparent); --st: var(--idle); }
@@ -144,12 +146,12 @@
   .prov { display: grid; gap: 10px; }
   .prov .row { display: grid; gap: 4px; }
   .prov .top { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
-  .prov .name { font: 650 13.5px/1.2 var(--f-head); text-transform: capitalize; }
+  .prov .name { font: 700 13.5px/1.2 var(--f-head); }
   .entry { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; font-size: 12px; padding-left: 10px;
            border-left: 1px solid var(--line); }
   .entry .m { font-family: var(--f-data); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .meter { height: 6px; border-radius: 999px; background: color-mix(in srgb, var(--ink) 10%, transparent); overflow: hidden; grid-column: 1 / -1; }
-  .meter > i { display: block; height: 100%; background: var(--accent); border-radius: inherit; }
+  .meter > i { display: block; height: 100%; background: var(--fill); border-radius: inherit; }
   .meter.hot > i { background: var(--warn); } .meter.full > i { background: var(--bad); }
 
   /* ---------- workflow card */
@@ -157,31 +159,34 @@
   .goal { color: var(--muted); max-width: 80ch; margin: 10px 0 0; }
   .progress { margin-top: 14px; }
   .stats { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 12.5px; color: var(--muted); margin-top: 6px; }
+  .stats b { color: var(--ink); }
   .budget { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 16px; padding-top: 14px;
             border-top: 1px dashed var(--card-line); }
   @media (max-width: 760px) { .budget { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-  .budget .b { display: grid; gap: 5px; font-size: 12px; }
+  .budget .b { display: grid; gap: 5px; font-size: 12px; align-content: start; }
   .budget .b .v { color: var(--muted); font-size: 12.5px; }
   .budget .b .v b { font: 700 14px/1 var(--f-data); color: var(--ink); font-variant-numeric: tabular-nums; }
+  .budget .b .sub { color: var(--muted); }
   .banner { margin-top: 14px; border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
             background: color-mix(in srgb, var(--warn) 10%, var(--card)); border-radius: var(--r); padding: 12px 14px; display: grid; gap: 10px; }
   .banner strong { color: var(--warn); }
   .banner form { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
   .banner form label { width: 130px; }
   .err { color: var(--bad); }
-  .section h3 { font-size: 14px; font-weight: 650; margin-bottom: 10px; }
 
-  .approval { border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); border-radius: var(--r); padding: 14px;
-              background: var(--surface); display: grid; gap: 8px; }
+  .approval .head h2 { display: flex; gap: 8px; align-items: baseline; }
+  .approval .body { display: grid; gap: 8px; }
   .approval pre { max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0;
                   font: 12px/1.45 var(--f-data); background: color-mix(in srgb, var(--ink) 4%, transparent); padding: 8px; border-radius: 4px; }
   details > summary { cursor: pointer; color: var(--muted); }
 
   .lanes { display: grid; gap: 6px; }
-  .lane { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 10px; align-items: center; }
-  @media (max-width: 760px) { .lane { grid-template-columns: 120px minmax(0, 1fr); } }
-  .lane .k { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .lane .k small { display: block; font: 11px/1.2 var(--f-data); color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+  .lane { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 10px; align-items: center; }
+  @media (max-width: 760px) { .lane { grid-template-columns: 124px minmax(0, 1fr); } }
+  .lane .k { font-size: 12.5px; min-width: 0; }
+  .lane .k > span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lane .k small { display: block; font-size: 11px; line-height: 1.3; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lane .k small .data { font-size: 11px; }
   .track { position: relative; height: 18px; background: color-mix(in srgb, var(--ink) 6%, transparent); border-radius: 3px; }
   .seg { position: absolute; top: 3px; height: 12px; border-radius: 2px; min-width: 3px; background: var(--st); }
   .legend { font-size: 12px; color: var(--muted); margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px 14px; }
@@ -191,12 +196,12 @@
   .scroll { overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
-  th { font: 650 12px/1.3 var(--f-head); color: var(--muted); white-space: nowrap; }
+  th { font: 700 12px/1.3 var(--f-head); color: var(--muted); white-space: nowrap; }
   td .data { font-size: 12.5px; }
   .events { max-height: 380px; overflow: auto; }
-  .events td:first-child { white-space: nowrap; width: 72px; color: var(--muted); }
+  .events td:first-child { white-space: nowrap; width: 78px; color: var(--muted); }
 
-  .empty { color: var(--muted); padding: 28px 12px; text-align: center; }
+  .empty { color: var(--muted); padding: 24px 12px; text-align: center; }
   #toast { position: fixed; bottom: 18px; right: 18px; max-width: 440px; padding: 11px 14px; border-radius: var(--r);
            background: var(--oak); color: var(--on-oak); box-shadow: var(--shadow); display: none; z-index: 9; }
   #toast.bad { background: var(--bad); color: #fff; }
@@ -211,7 +216,7 @@
 
 <header class="bar">
   <h1>AgentFlow</h1>
-  <div class="health" aria-live="polite">
+  <div class="health">
     <span id="engine"><span class="dot"></span>engine …</span>
     <span id="provhealth"></span>
   </div>
@@ -224,6 +229,7 @@
     </div>
   </details>
 </header>
+<div id="announcer" class="sr" aria-live="polite"></div>
 
 <div class="wrap">
   <section class="card" aria-labelledby="ask-h">
@@ -234,14 +240,14 @@
         <input id="question" maxlength="1000" placeholder="How many electric cars were sold in India last month?">
         <button class="primary" id="askbtn" type="submit">Ask</button>
       </form>
-      <div id="answer" aria-live="polite"></div>
+      <div id="answer"></div>
     </div>
   </section>
 
   <div class="desk">
     <div class="stack">
       <section class="panel" aria-labelledby="new-h">
-        <h2 id="new-h">File a new goal</h2>
+        <h2 id="new-h" class="label">File a new goal</h2>
         <form id="newgoal" class="new-goal">
           <label class="sr" for="goal">Goal</label>
           <textarea id="goal" rows="3" placeholder="Write a short beginner guide on EV adoption in India and publish it"></textarea>
@@ -255,13 +261,13 @@
           <div><button class="primary" type="submit">Plan &amp; run</button></div>
         </form>
       </section>
-      <section class="panel" aria-labelledby="cat-h">
-        <h2 id="cat-h">Catalog</h2>
-        <div id="list"><div class="empty">Loading…</div></div>
-      </section>
       <section class="panel" aria-labelledby="prov-h">
-        <h2 id="prov-h">Providers</h2>
+        <h2 id="prov-h" class="label">Providers</h2>
         <div id="providers" class="prov"><div class="empty">Loading…</div></div>
+      </section>
+      <section class="panel" aria-labelledby="cat-h">
+        <h2 id="cat-h" class="label">Catalog</h2>
+        <div id="list"><div class="empty">Loading…</div></div>
       </section>
     </div>
     <div id="detail" class="stack"><div class="panel empty">Pick a workflow from the catalog, or file a new goal.</div></div>
@@ -273,15 +279,17 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
-const pill = (s, prefix = "s") => `<span class="pill ${prefix}-${esc(s)}">${esc(String(s).replaceAll("_", " ").toLowerCase())}</span>`;
+const human = (s) => String(s).replaceAll("_", " ").toLowerCase();
+const pill = (s, prefix = "s") => `<span class="pill ${prefix}-${esc(s)}">${esc(human(s))}</span>`;
 const icon = (name) => `<svg class="i" aria-hidden="true"><use href="#i-${name}"/></svg>`;
 const callno = (id) => "AF-" + String(id).slice(0, 6).toUpperCase();
 const money = (v) => v == null ? "unknown" : "$" + Number(v).toFixed(Number(v) < 0.01 ? 4 : 2);
+const PROVIDER_NAMES = { gemini: "Gemini", anthropic: "Anthropic", openai: "OpenAI", ollama: "Ollama", fake: "Fake (demo)" };
 const store = { get(k) { try { return localStorage.getItem(k) || ""; } catch { return ""; } },
                 set(k, v) { try { localStorage.setItem(k, v); } catch {} } };
 let selected = location.hash.slice(1) || store.get("af.selected") || null;  // #<id> links to a workflow
 let busy = false;
-let typing = null;
+let lastStatus = {};
 
 for (const id of ["apikey", "actor"]) {
   $(id).value = store.get("af." + id);
@@ -293,6 +301,34 @@ function toast(msg, bad = false) {
   t.textContent = msg; t.className = bad ? "bad" : ""; t.style.display = "block";
   clearTimeout(toast.timer);
   toast.timer = setTimeout(() => (t.style.display = "none"), 4500);
+}
+const announce = (msg) => { $("announcer").textContent = msg; };
+
+/* Refresh without destroying what the operator is doing: a region is rewritten only when its HTML
+   changed, focus is restored to the same control, and inner scroll positions are kept. A region
+   holding the focused text field (approval comment, budget form) is not rewritten at all. */
+function swap(el, html) {
+  if (!el || el.dataset.html === html) return false;
+  const active = document.activeElement;
+  if (active && el.contains(active) && active.matches("input, textarea, select")) return false;
+  const focusKey = active && el.contains(active) ? keyOf(active) : null;
+  const scrolls = [...el.querySelectorAll(".events, .scroll, #list")].map((n) => n.scrollTop);
+  el.innerHTML = html;
+  el.dataset.html = html;
+  [...el.querySelectorAll(".events, .scroll, #list")].forEach((n, i) => { if (scrolls[i]) n.scrollTop = scrolls[i]; });
+  if (focusKey) { const again = el.querySelector(focusKey); if (again) again.focus({ preventScroll: true }); }
+  return true;
+}
+function keyOf(node) {
+  for (const attr of ["data-a", "data-d", "data-id", "data-q"]) {
+    const holder = node.closest(`[${attr}]`);
+    if (holder) {
+      const ap = holder.closest("[data-approval]");
+      const scope = ap ? `[data-approval="${CSS.escape(ap.dataset.approval)}"] ` : "";
+      return `${scope}[${attr}="${CSS.escape(holder.getAttribute(attr))}"]`;
+    }
+  }
+  return node.id ? `#${CSS.escape(node.id)}` : null;
 }
 
 async function api(method, path, body) {
@@ -333,7 +369,7 @@ function renderAnswer(r) {
       <div class="text">${cite(r.answer, r.sources)}</div>
       ${r.key_points.length ? `<ul>${r.key_points.map((k) => `<li>${cite(k, r.sources)}</li>`).join("")}</ul>` : ""}
       <div class="meta"><span>confidence <b>${esc(r.confidence)}</b></span>
-        <span class="num">${(t.total / 1000).toFixed(1)} s</span>
+        <span><span class="num">${(t.total / 1000).toFixed(1)}</span> s total</span>
         <span>search ${(t.search / 1000).toFixed(1)} s · reading ${(t.read_pages / 1000).toFixed(1)} s · model ${(t.model / 1000).toFixed(1)} s</span>
         <span class="data">${esc(r.model)}</span></div>
       ${r.warnings.length ? `<div class="err meta">${r.warnings.map(esc).join("<br>")}</div>` : ""}
@@ -341,10 +377,13 @@ function renderAnswer(r) {
     </div>
     <aside class="tracings" aria-label="Sources"><h3>See also</h3>${tracings}</aside>
   </div>`;
-  for (const b of $("answer").querySelectorAll("[data-q]")) {
-    b.onclick = () => { $("question").value = b.dataset.q; $("askform").requestSubmit(); };
-  }
+  announce(`Answer ready with ${r.sources.length} sources.`);
 }
+
+$("answer").addEventListener("click", (ev) => {
+  const b = ev.target.closest("[data-q]");
+  if (b) { $("question").value = b.dataset.q; $("askform").requestSubmit(); }
+});
 
 $("askform").onsubmit = async (ev) => {
   ev.preventDefault();
@@ -352,8 +391,9 @@ $("askform").onsubmit = async (ev) => {
   if (question.length < 3) return toast("Type a question first (3 characters or more).", true);
   $("askbtn").disabled = true;
   $("answer").innerHTML = `<p class="muted" style="margin:14px 0 0">Searching the web and reading the top pages…</p>`;
+  announce("Searching the web.");
   try { renderAnswer(await api("POST", "/ask", { question })); }
-  catch (e) { $("answer").innerHTML = `<p class="err" style="margin:14px 0 0">${esc(e.message)}</p>`; }
+  catch (e) { $("answer").innerHTML = `<p class="err" style="margin:14px 0 0">${esc(e.message)}</p>`; announce(e.message); }
   finally { $("askbtn").disabled = false; }
 };
 
@@ -365,70 +405,89 @@ $("newgoal").onsubmit = (ev) => {
     if (!goal) throw new Error("Write a goal first.");
     const budget = {};
     const num = (id, key, int) => { const v = $(id).value.trim(); if (v) { const n = int ? parseInt(v, 10) : parseFloat(v);
-      if (!(n > 0)) throw new Error(`${key} must be a positive number.`); budget[key] = n; } };
+      if (!(n > 0)) throw new Error(`${human(key)} must be a positive number.`); budget[key] = n; } };
     num("b-cost", "max_cost_usd", false); num("b-calls", "max_llm_calls", true); num("b-tokens", "max_tokens", true);
     const body = { name: goal.slice(0, 80), goal, run: true };
     if (Object.keys(budget).length) body.budget = budget;
     const wf = await api("POST", "/workflows", body);
-    selected = wf.id; store.set("af.selected", selected); history.replaceState(null, "", "#" + selected);
+    select(wf.id);
     $("goal").value = "";
   }, "Goal filed. Planning…");
 };
 
 /* ------------------------------------------------------------ catalog + providers */
-async function loadList() {
-  const data = await api("GET", "/workflows?limit=30");
-  $("list").innerHTML = data.items.length ? data.items.map((w) => `
-    <div class="wf" role="link" tabindex="0" data-id="${esc(w.id)}" aria-current="${w.id === selected}">
-      <span class="name">${esc(w.name)}</span>${pill(w.status)}
-      <span class="sub"><span class="callno">${callno(w.id)}</span><span>${esc(new Date(w.created_at).toLocaleString())}</span></span>
-    </div>`).join("") : `<div class="empty">Nothing filed yet. File a goal above.</div>`;
-  for (const el of $("list").querySelectorAll(".wf")) {
-    const open = () => { selected = el.dataset.id; store.set("af.selected", selected); history.replaceState(null, "", "#" + selected); refresh(); };
-    el.onclick = open;
-    el.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } };
-  }
+function select(id) {
+  selected = id; store.set("af.selected", id); history.replaceState(null, "", "#" + id);
 }
 
-function meter(count, limit) {
+async function loadList() {
+  const data = await api("GET", "/workflows?limit=30");
+  swap($("list"), data.items.length ? data.items.map((w) => `
+    <div class="wf" role="link" tabindex="0" data-id="${esc(w.id)}" aria-current="${w.id === selected}">
+      <span class="name">${esc(w.name)}</span>
+      <span class="sub"><span class="callno">${callno(w.id)}</span><span>${esc(new Date(w.created_at).toLocaleString())}</span>${pill(w.status)}</span>
+    </div>`).join("") : `<div class="empty">Nothing filed yet. File a goal above.</div>`);
+  for (const w of data.items) {
+    if (lastStatus[w.id] && lastStatus[w.id] !== w.status) announce(`${w.name}: now ${human(w.status)}.`);
+    lastStatus[w.id] = w.status;
+  }
+}
+$("list").addEventListener("click", (ev) => { const row = ev.target.closest(".wf"); if (row) { select(row.dataset.id); refresh(); } });
+$("list").addEventListener("keydown", (ev) => {
+  const row = ev.target.closest(".wf");
+  if (row && (ev.key === "Enter" || ev.key === " ")) { ev.preventDefault(); select(row.dataset.id); refresh(); }
+});
+
+function meter(count, limit, label) {
   if (!limit) return "";
   const pct = Math.min(100, (count / limit) * 100);
-  return `<div class="meter ${pct >= 100 ? "full" : pct >= 80 ? "hot" : ""}" role="img" aria-label="${count} of ${limit} requests used"><i style="width:${pct}%"></i></div>`;
+  return `<div class="meter ${pct >= 100 ? "full" : pct >= 80 ? "hot" : ""}" role="img" aria-label="${esc(label)}"><i style="width:${pct}%"></i></div>`;
 }
 
 async function loadProviders() {
   let p;
-  try { p = await api("GET", "/providers"); } catch { $("providers").innerHTML = `<div class="empty">Provider status unavailable.</div>`; return; }
-  const health = [];
-  $("providers").innerHTML = p.providers.length ? p.providers.map((pr) => {
+  try { p = await api("GET", "/providers"); } catch { swap($("providers"), `<div class="empty">Provider status unavailable.</div>`); return; }
+  const health = [], idle = [];
+  const rows = p.providers.map((pr) => {
+    const nice = PROVIDER_NAMES[pr.name] || pr.name;
+    if (!pr.configured) {
+      const why = pr.key_present === true ? "key set, not active in this server" : pr.key_present === false ? "no API key" : "not running";
+      idle.push(`${esc(nice)} <span class="muted">(${why})</span>`);
+      return "";
+    }
     const open = pr.entries.some((e) => e.circuit !== "closed");
     const exhausted = pr.entries.some((e) => e.quota && e.quota.day && e.quota.day.exhausted);
-    const state = !pr.configured ? "not configured" : exhausted ? "quota used up" : open ? "circuit open" : "ready";
-    const cls = !pr.configured ? "s-CANCELLED" : exhausted || open ? "s-PAUSED" : "s-COMPLETED";
-    if (pr.configured) health.push(`<span><span class="dot ${exhausted || open ? "warn" : "ok"}"></span>${esc(pr.name)}</span>`);
-    const keyNote = pr.key_present === false ? "no API key" : pr.key_present === true ? "key set" : "local";
-    return `<div class="row"><div class="top"><span class="name">${esc(pr.name)}</span><span class="pill ${cls}">${state}</span></div>
-      <div class="muted" style="font-size:12px">${keyNote}</div>
-      ${pr.entries.map((e) => {
+    const state = exhausted ? "quota used up" : open ? "circuit open" : "ready";
+    health.push(`<span><span class="dot ${exhausted || open ? "warn" : "ok"}"></span>${esc(nice)}</span>`);
+    return `<div class="row"><div class="top"><span class="name">${esc(nice)}</span><span class="pill ${exhausted || open ? "s-PAUSED" : "s-COMPLETED"}">${state}</span></div>
+      ${pr.entries.length ? pr.entries.map((e) => {
         const d = (e.quota && e.quota.day) || { count: 0, limit: null };
         return `<div class="entry"><span class="m" title="${esc(e.entry)}">${esc(e.model)}</span>
-          <span class="num muted">${d.count}${d.limit ? " / " + d.limit : ""} today${e.circuit !== "closed" ? " · " + esc(e.circuit.replace("_", " ")) : ""}</span>
-          ${meter(d.count, d.limit)}</div>`;
-      }).join("")}</div>`;
-  }).join("") : `<div class="empty">The server is using a test client; no providers to show.</div>`;
-  $("provhealth").innerHTML = health.join("");
+          <span class="muted"><span class="num">${d.count}${d.limit ? " / " + d.limit : ""}</span> today${e.circuit !== "closed" ? " · " + esc(human(e.circuit)) : ""}</span>
+          ${meter(d.count, d.limit, `${d.count} of ${d.limit} requests used today`)}</div>`;
+      }).join("") : `<span class="muted" style="font-size:12px">not used by any route</span>`}</div>`;
+  }).join("");
+  swap($("providers"), (rows || `<div class="empty">No provider is configured.</div>`)
+    + (idle.length ? `<p class="muted" style="font-size:12px;margin:0">Not in use: ${idle.join(", ")}</p>` : ""));
+  swap($("provhealth"), health.join(""));
 }
 
 async function loadEngine() {
   try {
     const e = await api("GET", "/engine/status");
-    $("engine").innerHTML = e.enabled
+    swap($("engine"), e.enabled
       ? `<span class="dot ${e.running ? "ok" : "bad"}"></span>engine <b>${e.running ? "running" : "stopped"}</b> · ${esc(e.llm_provider)} · <span class="num">${e.in_flight_task_ids.length}/${e.max_concurrency}</span> busy`
-      : `<span class="dot"></span>engine disabled`;
-  } catch { $("engine").innerHTML = `<span class="dot bad"></span>engine unreachable`; }
+      : `<span class="dot"></span>engine disabled`);
+  } catch { swap($("engine"), `<span class="dot bad"></span>engine unreachable`); }
 }
 
-/* ------------------------------------------------------------ workflow card */
+/* ------------------------------------------------------------ workflow detail (one slot per section) */
+const SLOTS = ["d-card", "d-approvals", "d-lanes", "d-tasks", "d-timeline", "d-result"];
+function ensureSlots() {
+  if ($("d-card")) return;
+  $("detail").innerHTML = SLOTS.map((id) => `<div id="${id}" class="stack"></div>`).join("");
+}
+
 function controls(wf) {
   const c = wf.controls;
   return `<div class="controls">
@@ -439,19 +498,20 @@ function controls(wf) {
     <button data-a="cancel" class="danger" ${c.can_cancel ? "" : "disabled"}>Cancel</button></div>`;
 }
 
-function budgetStrip(wf) {
+function budgetStrip(wf, summary) {
   const eff = wf.effective_budget || {}, u = wf.usage || {};
-  const cell = (label, used, limit, fmt) => {
+  const costs = Object.entries(summary.cost_by_provider || {}).map(([k, v]) => `${esc(PROVIDER_NAMES[k] || k)} ${money(v)}`).join(" · ");
+  const cell = (label, used, limit, fmt, sub = "") => {
     const pct = limit ? Math.min(100, (used / limit) * 100) : 0;
     return `<div class="b"><span class="muted">${label}</span><span class="v"><b>${fmt(used)}</b>${limit != null ? " of <b>" + fmt(limit) + "</b>" : " · no limit"}</span>
-      ${limit != null ? `<div class="meter ${pct >= 100 ? "full" : pct >= 80 ? "hot" : ""}"><i style="width:${pct}%"></i></div>` : ""}</div>`;
+      ${limit != null ? meter(used, limit, `${label}: ${fmt(used)} of ${fmt(limit)}`) : ""}${sub ? `<span class="sub">${sub}</span>` : ""}</div>`;
   };
   return `<div class="budget" aria-label="Budget">
-    ${cell("LLM calls", u.llm_calls || 0, eff.max_llm_calls, (v) => String(v))}
+    ${cell("LLM calls", u.llm_calls || 0, eff.max_llm_calls, (v) => String(v), summary.fallbacks ? `${summary.fallbacks} answered by a fallback` : "")}
     ${cell("Tokens", u.tokens || 0, eff.max_tokens, (v) => Number(v).toLocaleString())}
-    ${cell("Cost", u.cost_usd || 0, eff.max_cost_usd, money)}
+    ${cell("Cost", u.cost_usd || 0, eff.max_cost_usd, money, costs)}
     ${cell("Duration", u.duration_seconds || 0, eff.max_duration_seconds, (v) => Number(v).toFixed(0) + " s")}
-  </div>${u.unpriced_calls ? `<p class="muted" style="font-size:12px;margin:6px 0 0">${u.unpriced_calls} call(s) have no known price, so cost may be higher than shown.</p>` : ""}`;
+  </div>${u.unpriced_calls ? `<p class="muted" style="font-size:12px;margin:6px 0 0">${u.unpriced_calls} call(s) have no known price, so the real cost may be higher.</p>` : ""}`;
 }
 
 function budgetBanner(wf, events) {
@@ -461,7 +521,7 @@ function budgetBanner(wf, events) {
   if (!ev || !lastPause || !String(lastPause.payload.reason || "").startsWith("budget_exceeded")) return "";
   const eff = wf.effective_budget;
   const v = (k) => eff[k] == null ? "" : eff[k];
-  return `<div class="banner" role="alert"><div><strong>Paused: budget reached (${esc(ev.payload.limit.replaceAll("_", " "))}${ev.payload.estimated ? ", estimated before the call" : ""}).</strong>
+  return `<div class="banner" role="alert"><div><strong>Paused: budget reached (${esc(human(ev.payload.limit))}${ev.payload.estimated ? ", estimated before the call" : ""}).</strong>
       Nothing new runs until you raise the limit and resume. Work already finished is kept.</div>
     <form id="budgetform">
       <label class="field">Max cost $<input name="max_cost_usd" inputmode="decimal" value="${v("max_cost_usd")}" placeholder="none"></label>
@@ -471,45 +531,59 @@ function budgetBanner(wf, events) {
     </form></div>`;
 }
 
-function approvals(list) {
+function approvalCards(list, wf) {
   return list.map((a) => {
     const p = a.request_payload;
-    return `<div class="approval" data-approval="${esc(a.id)}">
-      <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap"><strong>${icon("lock")} ${esc(p.task_name)} <span class="muted">(${esc(p.agent_type)})</span></strong>
-        <span class="muted" style="font-size:12px">expires ${a.expires_at ? esc(new Date(a.expires_at).toLocaleString()) : "never"}</span></div>
-      <div class="muted">${esc(p.why_sensitive)}</div><div>${esc(p.task_description)}</div>
-      <details><summary>What it will use: task input and upstream results</summary>
-        <pre>${esc(JSON.stringify(p.task_input, null, 2))}</pre>
-        ${Object.entries(p.dependency_previews || {}).map(([k, v]) => `<div><strong>${esc(k)}</strong><pre>${esc(v)}</pre></div>`).join("")}
-      </details>
-      <label class="field">Comment or reason<input class="comment"></label>
-      <label class="field">Input changes before it runs (JSON, optional)<textarea class="overrides" rows="2" placeholder='{"title": "Final title"}'></textarea></label>
-      <div class="controls"><button class="primary" data-d="approve">Approve</button>
-        <button data-d="skip_task">Reject and skip this step</button>
-        <button class="danger" data-d="fail_workflow">Reject and stop the workflow</button></div></div>`;
+    return `<section class="card approval" data-approval="${esc(a.id)}" aria-label="Approval needed">
+      <div class="head"><h2>${icon("lock")} ${esc(p.task_name)} <span class="muted" style="font-size:13px;font-weight:500">needs your decision</span></h2>
+        <span class="tags"><span class="muted" style="font-size:12px">expires ${a.expires_at ? esc(new Date(a.expires_at).toLocaleString()) : "never"}</span><span class="callno">${callno(wf.id)}</span></span></div>
+      <div class="body">
+        <div class="muted">${esc(p.why_sensitive)}</div><div>${esc(p.task_description)} <span class="muted">(${esc(p.agent_type)})</span></div>
+        <details><summary>What it will use: task input and upstream results</summary>
+          <pre>${esc(JSON.stringify(p.task_input, null, 2))}</pre>
+          ${Object.entries(p.dependency_previews || {}).map(([k, v]) => `<div><strong>${esc(k)}</strong><pre>${esc(v)}</pre></div>`).join("")}
+        </details>
+        <label class="field">Comment or reason<input class="comment"></label>
+        <label class="field">Input changes before it runs (JSON, optional)<textarea class="overrides" rows="2" placeholder='{"title": "Final title"}'></textarea></label>
+        <div class="controls"><button class="primary" data-d="approve">Approve</button>
+          <button data-d="skip_task">Reject and skip this step</button>
+          <button class="danger" data-d="fail_workflow">Reject and stop the workflow</button></div></div></section>`;
   }).join("");
 }
 
-function lanes(tl, tasksByKey) {
+function lanes(tl) {
   const ends = tl.spans.flatMap((s) => s.attempts.map((a) => a.end_offset_s ?? a.start_offset_s));
   const total = Math.max(1, ...ends, ...tl.entries.map((e) => e.offset_s || 0));
   const rows = tl.spans.map((s) => {
     const last = s.attempts[s.attempts.length - 1];
-    const via = last && last.provider ? `${last.provider}:${last.model}` : (last && last.model) || "not run yet";
-    return `<div class="lane"><div class="k" title="${esc(s.task_key)}">${esc(s.task_key)}
-        <small>${esc(via)}${s.fallback_from ? "" : ""}</small>
-        ${s.fallback_from ? `<span class="fb">${icon("return")} fallback from ${esc(s.fallback_from.split(":")[0])}</span>` : ""}</div>
+    const via = last && last.provider ? `<span class="data">${esc(last.provider)}:${esc(last.model)}</span>`
+      : last && last.model ? `<span class="data">${esc(last.model)}</span>` : "not run yet";
+    return `<div class="lane"><div class="k" title="${esc(s.task_key)}"><span>${esc(s.task_key)}</span><small>${via}</small>
+        ${s.fallback_from ? `<span class="fb">${icon("return")} fallback from ${esc(PROVIDER_NAMES[s.fallback_from.split(":")[0]] || s.fallback_from)}</span>` : ""}</div>
       <div class="track">${s.attempts.map((a) => {
         const end = a.end_offset_s ?? total;
         const left = (a.start_offset_s / total) * 100, width = Math.max(0.4, ((end - a.start_offset_s) / total) * 100);
         return `<div class="seg o-${esc(a.outcome)}" style="left:${left}%;width:${width}%"
-          title="#${a.attempt_number} ${esc(a.outcome)}${a.error_type ? " (" + esc(a.error_type) + ")" : ""} · ${esc(a.provider || "")}:${esc(a.model || "")} · ${esc(a.worker_id)}"></div>`;
+          title="#${a.attempt_number} ${esc(human(a.outcome))}${a.error_type ? " (" + esc(a.error_type) + ")" : ""} · ${esc(a.provider || "")}:${esc(a.model || "")} · ${esc(a.worker_id)}"></div>`;
       }).join("")}</div></div>`;
   }).join("");
-  return `<div class="lanes">${rows || `<p class="muted">No attempts yet.</p>`}</div>
+  return `<section class="panel"><h2 class="label">Attempts per task</h2><div class="lanes">${rows || `<p class="muted">No attempts yet.</p>`}</div>
     <div class="legend"><span><i class="o-succeeded"></i>succeeded</span><span><i class="o-failed"></i>failed or worker lost</span>
       <span><i class="o-interrupted"></i>interrupted or budget</span><span><i class="o-running"></i>running</span>
-      <span>0 to <span class="num">${total.toFixed(1)} s</span> since filing</span></div>`;
+      <span>0 to <span class="num">${total.toFixed(1)}</span> s since filing</span></div></section>`;
+}
+
+function tasksTable(wf) {
+  return `<section class="panel"><h2 class="label">Tasks</h2><div class="scroll"><table>
+    <thead><tr><th>Task</th><th>Agent</th><th>Status</th><th>Model</th><th>Cost</th><th>Attempts</th><th>Depends on</th></tr></thead><tbody>
+    ${wf.tasks.map((t) => { const m = t.metrics || {};
+      return `<tr><td>${esc(t.key)} ${t.requires_approval ? `<span title="Needs approval">${icon("lock")}</span>` : ""}</td><td>${esc(t.agent_type)}</td>
+      <td>${pill(t.status)}${t.error ? `<div class="err" style="font-size:12px">${esc(t.error_type)}: ${esc(t.error.slice(0, 160))}</div>` : ""}</td>
+      <td>${m.model ? `<span class="data">${m.provider ? esc(m.provider) + ":" : ""}${esc(m.model)}</span>` : "–"}
+        ${m.fallback_from ? `<div class="fb">${icon("return")} fallback from ${esc(m.fallback_from)}</div>` : ""}</td>
+      <td>${m.model ? `<span class="num">${money(m.cost_usd)}</span>` : "–"}</td><td class="num">${t.attempt_count}/${t.max_attempts}</td>
+      <td class="muted">${esc(t.depends_on.join(", ") || "–")}</td></tr>`; }).join("")}
+    </tbody></table></div></section>`;
 }
 
 async function loadDetail() {
@@ -519,52 +593,37 @@ async function loadDetail() {
     [wf, tl, pend, events] = await Promise.all([api("GET", `/workflows/${selected}`), api("GET", `/workflows/${selected}/timeline`),
       api("GET", `/approvals?status=pending&workflow_id=${selected}`), api("GET", `/workflows/${selected}/events`)]);
   } catch (e) { $("detail").innerHTML = `<div class="panel err">${esc(e.message)}</div>`; return; }
-  const p = wf.progress, done = p.succeeded + p.skipped, s = tl.summary;
-  const tasksByKey = Object.fromEntries(wf.tasks.map((t) => [t.key, t]));
-  const costs = Object.entries(s.cost_by_provider || {}).map(([k, v]) => `${esc(k)} ${money(v)}`).join(" · ");
-  const html = `
+  ensureSlots();
+  const p = wf.progress, done = p.succeeded + p.skipped;
+  const counts = [["done", `${done}/${p.total}`, true], ["running", p.running], ["retrying", p.retrying],
+                  ["awaiting approval", p.awaiting_approval], ["failed", p.failed]]
+    .filter(([, n, always]) => always || n).map(([label, n]) => `<span><b>${n}</b> ${label}</span>`).join("");
+  swap($("d-card"), `
     <section class="card" aria-label="Workflow">
-      <div class="head"><h2>${esc(wf.name)}</h2>${pill(wf.status)}<span class="callno">${callno(wf.id)}</span></div>
+      <div class="head"><h2>${esc(wf.name)}</h2><span class="tags">${pill(wf.status)}<span class="callno">${callno(wf.id)}</span></span></div>
       <div class="body">
         ${controls(wf)}
         <p class="goal">${esc(wf.goal)}</p>
         <div class="progress"><div class="meter" role="img" aria-label="${done} of ${p.total} tasks done"><i style="width:${p.total ? (done / p.total) * 100 : 0}%"></i></div>
-          <div class="stats"><span>${done}/${p.total} done</span><span>${p.running} running</span><span>${p.retrying} retrying</span>
-            <span>${p.awaiting_approval} awaiting approval</span><span>${p.failed} failed</span>
-            ${wf.duration_seconds != null ? `<span class="num">${wf.duration_seconds} s</span>` : ""}
-            <span>${s.llm_calls} LLM calls</span><span>${s.fallbacks} fallback${s.fallbacks === 1 ? "" : "s"}</span>
-            ${costs ? `<span>${costs}</span>` : ""}</div></div>
-        ${budgetStrip(wf)}
+          <div class="stats">${counts}</div></div>
+        ${budgetStrip(wf, tl.summary)}
         ${budgetBanner(wf, events)}
         ${wf.error && wf.status !== "PAUSED" ? `<p class="err">${esc(wf.error)}</p>` : ""}
       </div>
-    </section>
-    ${pend.length ? `<section class="panel section"><h3>Waiting for your decision</h3><div class="stack">${approvals(pend)}</div></section>` : ""}
-    <section class="panel section"><h3>Attempts per task</h3>${lanes(tl, tasksByKey)}</section>
-    <section class="panel section"><h3>Tasks</h3><div class="scroll"><table>
-      <thead><tr><th>Task</th><th>Agent</th><th>Status</th><th>Model</th><th>Cost</th><th>Attempts</th><th>Depends on</th></tr></thead><tbody>
-      ${wf.tasks.map((t) => { const m = t.metrics || {};
-        return `<tr><td>${esc(t.key)} ${t.requires_approval ? `<span title="Needs approval">${icon("lock")}</span>` : ""}</td><td>${esc(t.agent_type)}</td>
-        <td>${pill(t.status)}${t.error ? `<div class="err" style="font-size:12px">${esc(t.error_type)}: ${esc(t.error.slice(0, 160))}</div>` : ""}</td>
-        <td><span class="data">${m.provider ? esc(m.provider) + ":" : ""}${esc(m.model || "–")}</span>
-          ${m.fallback_from ? `<div class="fb">${icon("return")} fallback from ${esc(m.fallback_from)}</div>` : ""}</td>
-        <td class="num">${m.model ? money(m.cost_usd) : "–"}</td><td class="num">${t.attempt_count}/${t.max_attempts}</td>
-        <td class="muted">${esc(t.depends_on.join(", ") || "–")}</td></tr>`; }).join("")}
-      </tbody></table></div></section>
-    <section class="panel section"><h3>Timeline</h3><div class="events"><table><tbody>
-      ${tl.entries.slice().reverse().map((e) => `<tr><td class="num">+${e.offset_s.toFixed(1)} s</td><td>${esc(e.text)}</td></tr>`).join("")}
-    </tbody></table></div></section>
-    ${wf.result ? `<section class="panel section"><h3>Result</h3><details><summary>Final outputs (JSON)</summary><pre class="data" style="white-space:pre-wrap">${esc(JSON.stringify(wf.result, null, 2))}</pre></details></section>` : ""}`;
-  // Keep whatever the operator is typing (approval card or budget form) across the 2 s refresh.
-  const active = document.activeElement && document.activeElement.closest(".approval, #budgetform");
-  if (active) return;
-  $("detail").innerHTML = html;
-  wire(wf);
+    </section>`);
+  swap($("d-approvals"), approvalCards(pend, wf));
+  swap($("d-lanes"), lanes(tl));
+  swap($("d-tasks"), tasksTable(wf));
+  swap($("d-timeline"), `<section class="panel"><h2 class="label">Timeline</h2><div class="events"><table><tbody>
+      ${tl.entries.slice().reverse().map((e) => `<tr><td><span class="num">+${e.offset_s.toFixed(1)}</span> s</td><td>${esc(e.text)}</td></tr>`).join("")}
+    </tbody></table></div></section>`);
+  swap($("d-result"), wf.result ? `<section class="panel"><h2 class="label">Result</h2><details><summary>Final outputs (JSON)</summary><pre class="data" style="white-space:pre-wrap">${esc(JSON.stringify(wf.result, null, 2))}</pre></details></section>` : "");
 }
 
-function wire(wf) {
-  const id = wf.id;
-  const routes = {
+/* One delegated handler set for the detail column: controls, budget form, approvals. */
+function controlAction(name) {
+  const id = selected;
+  return {
     "pause": () => api("POST", `/workflows/${id}/pause`, { actor: actor(), mode: "graceful" }),
     "pause-now": () => api("POST", `/workflows/${id}/pause`, { actor: actor(), mode: "immediate" }),
     "resume": () => api("POST", `/workflows/${id}/resume`, { actor: actor() }),
@@ -574,46 +633,47 @@ function wire(wf) {
       if (reason === null) throw new Error("Cancel aborted.");
       return api("POST", `/workflows/${id}/cancel`, { actor: actor(), reason: reason || null });
     },
-  };
-  for (const b of document.querySelectorAll("#detail [data-a]")) {
-    b.onclick = () => act(routes[b.dataset.a], `${b.textContent.trim()}: done`);
-  }
-  const bf = $("budgetform");
-  if (bf) bf.onsubmit = (ev) => {
-    ev.preventDefault();
-    act(async () => {
-      const budget = {};
-      for (const [k, int] of [["max_cost_usd", false], ["max_llm_calls", true], ["max_tokens", true]]) {
-        const v = bf.elements[k].value.trim();
-        if (!v) { budget[k] = null; continue; }
-        const n = int ? parseInt(v, 10) : parseFloat(v);
-        if (!(n > 0)) throw new Error(`${k.replaceAll("_", " ")} must be a positive number, or empty for no limit.`);
-        budget[k] = n;
-      }
-      await api("PATCH", `/workflows/${id}/budget`, { actor: actor(), budget });
-    }, "Budget saved. Press Resume to continue.");
-  };
-  for (const card of document.querySelectorAll("#detail .approval")) {
-    for (const b of card.querySelectorAll("[data-d]")) {
-      b.onclick = () => act(async () => {
-        const comment = card.querySelector(".comment").value.trim();
-        const aid = card.dataset.approval;
-        if (b.dataset.d === "approve") {
-          const raw = card.querySelector(".overrides").value.trim();
-          let overrides = null;
-          if (raw) { try { overrides = JSON.parse(raw); } catch { throw new Error("Input changes must be valid JSON, e.g. {\"title\": \"New title\"}."); } }
-          return api("POST", `/approvals/${aid}/approve`, { actor: actor(), comment: comment || null, input_overrides: overrides });
-        }
-        if (!comment) throw new Error("Give a reason to reject (it is recorded).");
-        return api("POST", `/approvals/${aid}/reject`, { actor: actor(), reason: comment, on_reject: b.dataset.d });
-      }, `${b.textContent.trim()}: recorded`);
-    }
-  }
+  }[name];
 }
+$("detail").addEventListener("click", (ev) => {
+  const ctl = ev.target.closest("[data-a]");
+  if (ctl && !ctl.disabled) return act(controlAction(ctl.dataset.a), `${ctl.textContent.trim()}: done`);
+  const dec = ev.target.closest("[data-d]");
+  if (!dec) return;
+  const card = dec.closest(".approval");
+  act(async () => {
+    const comment = card.querySelector(".comment").value.trim();
+    const aid = card.dataset.approval;
+    if (dec.dataset.d === "approve") {
+      const raw = card.querySelector(".overrides").value.trim();
+      let overrides = null;
+      if (raw) { try { overrides = JSON.parse(raw); } catch { throw new Error("Input changes must be valid JSON, e.g. {\"title\": \"New title\"}."); } }
+      return api("POST", `/approvals/${aid}/approve`, { actor: actor(), comment: comment || null, input_overrides: overrides });
+    }
+    if (!comment) throw new Error("Give a reason to reject (it is recorded).");
+    return api("POST", `/approvals/${aid}/reject`, { actor: actor(), reason: comment, on_reject: dec.dataset.d });
+  }, `${dec.textContent.trim()}: recorded`);
+});
+$("detail").addEventListener("submit", (ev) => {
+  if (ev.target.id !== "budgetform") return;
+  ev.preventDefault();
+  const bf = ev.target;
+  act(async () => {
+    const budget = {};
+    for (const [k, int] of [["max_cost_usd", false], ["max_llm_calls", true], ["max_tokens", true]]) {
+      const v = bf.elements[k].value.trim();
+      if (!v) { budget[k] = null; continue; }
+      const n = int ? parseInt(v, 10) : parseFloat(v);
+      if (!(n > 0)) throw new Error(`${human(k)} must be a positive number, or empty for no limit.`);
+      budget[k] = n;
+    }
+    await api("PATCH", `/workflows/${selected}/budget`, { actor: actor(), budget });
+  }, "Budget saved. Press Resume to continue.");
+});
 
 async function refresh() {
   try { await Promise.all([loadList(), loadDetail(), loadEngine(), loadProviders()]); }
-  catch (e) { $("list").innerHTML = `<div class="empty err">${esc(e.message)}</div>`; }
+  catch (e) { swap($("list"), `<div class="empty err">${esc(e.message)}</div>`); }
 }
 refresh();
 setInterval(() => { if (!busy) refresh(); }, 2000);
