@@ -126,10 +126,10 @@ async def test_reject_skip_task_cascades_and_completes(client: AsyncClient, make
 
 async def test_expired_approval_fails_workflow(client: AsyncClient, make_engine) -> None:  # noqa: ANN001
     wf_id = await started_workflow(client, GATED)
-    engine = make_engine(FakeLLMClient(), approval_timeout_hours=0.3 / 3600)  # 0.3 s
+    engine = make_engine(FakeLLMClient(), approval_timeout_hours=2 / 3600)  # 2 s (0.3 s could expire before the first idle under load)
     await engine.run_until_idle()
     a = await only_pending(client, wf_id)
-    await asyncio.sleep(0.4)
+    await asyncio.sleep(2.1)
     assert (await approve(client, a["id"])).status_code == 409  # too late, even before the tick
 
     await engine.run_until_idle()

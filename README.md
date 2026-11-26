@@ -203,8 +203,10 @@ write, and duplicate side effects after a crash.
 ## Limitations and what's not done yet
 
 Honest status as of 2026-11-26:
-- **Small local models and tools.** See the reliability table in the Part 9 notes: small Ollama models often
-  skip tools or answer directly; route tool-using agents to a stronger model for real work.
+- **Small local models and tools.** Measured with `scripts/local_model_check.py`: `llama3.2:3b` never called a
+  tool (it answers straight away), `qwen3:4b` uses tools but is too slow (110-170 s per run, timeouts),
+  `qwen3.5:4b` researched and analysed correctly with tools (35-120 s; few runs so far). The recommended
+  routing in `config/models.example.yaml` keeps planning, writing and sending on Gemini.
 - **The prompt-injection detector is a heuristic.** It flags, it does not block; the real protection is that
   tainted tasks cannot act outside without a human.
 - **OpenAI's strict structured-output mode may reject the free-form `arguments` object** of the tool protocol

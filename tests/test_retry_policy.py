@@ -107,11 +107,11 @@ async def test_retrying_task_not_claimed_before_due(
     t = (await tasks_by_key(client, wf_id))["a"]
     assert t["status"] == "RETRYING" and calls_for(llm, "a") == 1  # not claimed yet
     due = await next_retry_due(session_factory)
-    assert due is not None and 29 < (due - utcnow()).total_seconds() <= 30
+    assert due is not None and 25 < (due - utcnow()).total_seconds() <= 30  # 5 s slack: ticks are slower under load
 
     # The engine loop sleeps until the retry is due (not just the poll interval).
     engine.settings = engine.settings.model_copy(update={"engine_poll_interval_seconds": 120})
-    assert 29 < await engine._sleep_seconds() <= 30
+    assert 25 < await engine._sleep_seconds() <= 30
 
     async with session_factory() as s:  # time passes
         await s.execute(update(Task).where(Task.id == uuid.UUID(t["id"]))

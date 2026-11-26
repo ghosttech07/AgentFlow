@@ -27,7 +27,7 @@ Positioning: a self-hosted engine for TRUSTWORTHY AI workflows. AI does the work
 reliability, cost limits and safety; humans approve under policy; every step is provable.
 8. [x] **Multi-provider AI + cost control**: Gemini, Claude, OpenAI, Ollama; cross-provider
    fallback; cost tracking; budgets; persisted quotas (DONE)
-9. [ ] **Tools + safe actions**: tool registry (web, HTTP APIs, DB, files, email), side-effect rules, sandboxing
+9. [x] **Tools + safe actions**: tool registry (web, HTTP APIs, DB, files, email), side-effect rules, sandboxing (DONE)
 10. [ ] **Adaptive workflows**: feedback loops, conditional branches, bounded re-planning, memory
 11. [ ] **Policy engine + users/roles**: policy-as-code, RBAC, multi-approver
 12. [ ] **Trust layer**: tamper-evident hash-chained audit, reproducibility, PII redaction, compliance export
@@ -75,6 +75,15 @@ Same rule: build one part, test it, then wait for the next part's prompt.
   live: Ollama structured call + full local workflow PASS, one Gemini call PASS, free-dev workflow
   COMPLETED at $0; budget/crash/controls demos PASS; whole-branch review fixes (7 Important) applied with
   regression tests. Next: Part 9 (tools + safe actions).
+- Part 9 done (2026-11-26): 582 default tests (full run 581 passed + 1 timing-flaky retry test, fixed: tolerance
+  1 s -> 5 s); engine/tool suites 3x (see logs/p9_final_verify.txt); tools_demo 12/12 PASS; crash/controls/budget
+  demos PASS; live Gemini researcher tool loop PASS (3 calls, $0.004); final opus review: 1 Critical + 6 Important
+  fixed with regression tests (tests/test_p9_review_fixes.py), 8 minors deferred (ledger). Also on this branch:
+  dashboard redesign (answer engine), Quick Ask history, Part 7 audit (docs/superpowers/specs/part7-audit.md).
+- Local model check (scripts/local_model_check.py): llama3.2:3b never calls tools (0/15); qwen3:4b uses tools but
+  110-170 s/run + timeouts; qwen3.5:4b researcher + analyst used tools correctly, 0 invalid calls (1 run/role).
+  Recommended routing in config/models.example.yaml: research/analysis on ollama:qwen3.5:4b, planner/writer/
+  communicator on Gemini. Next: Part 10 (adaptive workflows). Open for the user: Docker "full" profile, CI + ruff.
 - Docker Desktop on this machine: if `docker` is not on PATH in a fresh shell, it lives at
   `C:\Users\DELL\AppData\Local\Programs\DockerDesktop\resources\bin\docker.exe`.
 
