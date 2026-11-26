@@ -49,6 +49,8 @@ class ToolContext:
     settings: Settings
     options: dict[str, Any] = field(default_factory=dict)  # this tool's entry in tools.yaml
     credentials: CredentialResolver | None = None
+    # Set by a human approver only (e.g. allow_recipient_override); never part of the LLM-visible arguments.
+    approval_flags: dict[str, Any] = field(default_factory=dict)
     logger: logging.Logger = field(default_factory=lambda: logging.getLogger("app.tools"))
 
 

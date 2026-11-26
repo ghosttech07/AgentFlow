@@ -131,13 +131,19 @@ class CredentialResolver:
         self._specs = cfg.credentials if cfg else {}
         self._env = os.environ if environ is None else environ
 
-    def headers(self, name: str) -> dict[str, str]:
+    def secret(self, name: str) -> str:
         spec = self._specs.get(name)
         if spec is None:
             raise ToolError(f"unknown credential '{name}' (configured: {', '.join(sorted(self._specs)) or 'none'})")
         secret = self._env.get(spec.env)
         if not secret:
             raise ToolError(f"credential '{name}' is not set (environment variable {spec.env} is empty)")
+        return secret
+
+    def headers(self, name: str) -> dict[str, str]:
+        spec = self._specs[name] if name in self._specs else None
+        secret = self.secret(name)
+        assert spec is not None
         return {spec.header: spec.format.format(secret=secret)}
 
     def secret_values(self) -> list[str]:

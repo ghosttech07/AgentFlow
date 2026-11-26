@@ -5,3 +5,5 @@ import app.tools.http_request  # noqa: F401
 import app.tools.sql_query  # noqa: F401
 import app.tools.calculator  # noqa: F401
 import app.tools.files  # noqa: F401
+import app.tools.email  # noqa: F401
+import app.tools.webhook  # noqa: F401
