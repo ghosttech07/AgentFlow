@@ -122,8 +122,10 @@ async def expand_loop(session: AsyncSession, wf: Workflow, tasks: Sequence[Task]
         new[base] = t
         session.add(t)
     await session.flush()
-    await rewire_dependents(session, tasks, prev[spec.body[-1]], new[spec.body[-1]], exclude=body_ids | {
-        t.id for t in new.values()})
+    # Every task OUTSIDE the loop that used a body task now uses its newest version (e.g. a publisher that needs
+    # the writer, not only the reviewer), so nothing downstream ever reads a stale draft.
+    for base in spec.body:
+        await rewire_dependents(session, tasks, prev[base], new[base], exclude=body_ids | {t.id for t in new.values()})
     state = {**state, "iteration": iteration}
     wf.context = {**wf.context, "loops": {**wf.context["loops"], loop_name: state}}
     for t in new.values():

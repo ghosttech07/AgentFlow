@@ -246,7 +246,9 @@ async def get_workflow_graph(session: AsyncSession, workflow_id: uuid.UUID) -> d
     return {
         "nodes": [
             {"key": t.key, "name": t.name, "agent_type": t.agent_type, "status": t.status,
-             "requires_approval": t.requires_approval}
+             "requires_approval": t.requires_approval, "run_if": t.run_if, "join": t.join,
+             "skip_reason": t.skip_reason, "loop_name": t.loop_name, "iteration": t.iteration or 1,
+             "base_key": t.base_key or t.key}
             for t in workflow.tasks
         ],
         "edges": [{"from": d, "to": n.key} for n in nodes for d in n.depends_on],

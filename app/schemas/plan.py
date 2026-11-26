@@ -45,6 +45,13 @@ class GraphNode(BaseModel):
     agent_type: str
     status: TaskStatus
     requires_approval: bool
+    # Part 10: conditions, joins, why it was skipped, loop iteration
+    run_if: str | None = None
+    join: str = "all_succeeded"
+    skip_reason: str | None = None
+    loop_name: str | None = None
+    iteration: int = 1
+    base_key: str | None = None
 
 
 class GraphEdge(BaseModel):

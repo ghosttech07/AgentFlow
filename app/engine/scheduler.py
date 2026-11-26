@@ -378,10 +378,11 @@ async def _choose_best(session: AsyncSession, wf: Workflow, tasks: list[Task], s
         chosen = k
         reason = f"{reason}; best_by could not be evaluated ({exc}), using the latest finished iteration"
     if chosen != k:
-        old_last = graph_service.iteration_tasks(tasks, spec.name, k)[spec.body[-1]]
-        new_last = graph_service.iteration_tasks(tasks, spec.name, chosen)[spec.body[-1]]
+        latest = graph_service.iteration_tasks(tasks, spec.name, k)
+        best = graph_service.iteration_tasks(tasks, spec.name, chosen)
         body_ids = {t.id for t in tasks if t.loop_name == spec.name}
-        await graph_service.rewire_dependents(session, tasks, old_last, new_last, exclude=body_ids)
+        for base in spec.body:  # everything downstream uses the chosen draft
+            await graph_service.rewire_dependents(session, tasks, latest[base], best[base], exclude=body_ids)
     _set_loop(wf, spec.name, status="done", chosen_iteration=chosen, reason=reason)
     record_event(session, workflow_id=wf.id, event_type=EventType.LOOP_EXHAUSTED,
                  payload={"loop": spec.name, "iteration": k, "mode": "continue_with_best", "chosen_iteration": chosen,

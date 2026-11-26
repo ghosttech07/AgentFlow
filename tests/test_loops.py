@@ -170,3 +170,11 @@ async def test_until_error_and_best_by_error_fall_back_to_the_latest(client: Asy
     assert d["status"] == "COMPLETED"  # never stuck, never an endless loop
     ex = [e for e in await loop_events(client, wf) if e["event_type"] == "loop.exhausted"][0]["payload"]
     assert ex["chosen_iteration"] == 1 and "condition_error" in ex["reason"] and "best_by" in ex["reason"]
+
+
+async def test_a_task_using_the_writer_gets_the_newest_draft(client: AsyncClient, make_engine) -> None:  # noqa: ANN001
+    """A publisher-like task that depends on the writer (not the reviewer) must never read a stale draft."""
+    wf = await start(client, extra_tasks=[task("publish_like", "writer", ["write_guide", "review_guide"])])
+    await make_engine(llm([review(5), review(9)], [draft(1), draft(2, ["fixed"])])).run_until_idle()
+    t = await tasks_by_key(client, wf)
+    assert set(t["publish_like"]["depends_on"]) == {"write_guide__v2", "review_guide__v2"}

