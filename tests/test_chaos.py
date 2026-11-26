@@ -33,7 +33,10 @@ async def test_error_modes(client: AsyncClient, make_engine, mode: str, first_er
                            final_status: str) -> None:
     wf_id = await started_workflow(client, [task("a")])
     await add_rule(client, wf_id, "a", mode)
-    await make_engine(FakeLLMClient(), task_timeout_seconds=0.3).run_until_idle()
+    # Only "hang" needs a short task timeout; for the other modes the timed region includes the chaos rule's DB
+    # round-trips, which can exceed 0.3 s on a slow runner and turn the injected error into a timeout (seen on CI).
+    timeout = 0.3 if mode == "hang" else 10
+    await make_engine(FakeLLMClient(), task_timeout_seconds=timeout).run_until_idle()
 
     t = (await tasks_by_key(client, wf_id))["a"]
     assert t["status"] == final_status

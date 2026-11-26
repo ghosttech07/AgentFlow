@@ -203,14 +203,60 @@ async def _lock_pending(session: AsyncSession, approval_id: uuid.UUID) -> tuple[
     return approval, wf, task
 
 
+APPROVE_FIELDS: dict[str, set[str]] = {
+    "task": {"actor", "comment", "input_overrides"},
+    "tool_call": {"actor", "comment", "arguments_overrides", "allow_recipient_override", "confirm_duplicate"},
+    "plan_patch": {"actor", "comment"},
+    "loop_exhausted": {"actor", "comment", "extra_iterations"},
+}
+
+
+async def check_approve_fields(session: AsyncSession, approval_id: uuid.UUID, fields: set[str]) -> None:
+    """422 when the body carries fields that do not apply to this approval's kind (never silently ignored)."""
+    approval = await get_approval(session, approval_id)
+    allowed = APPROVE_FIELDS.get(approval.kind, {"actor", "comment"})
+    extra = sorted(fields - allowed)
+    if extra:
+        raise ValidationFailedError(
+            f"Field(s) {', '.join(extra)} do not apply to a {approval.kind} approval; allowed: {', '.join(sorted(allowed))}")
+
+
+async def duplicate_of(session: AsyncSession, approval: Approval, overrides: dict[str, Any] | None) -> tuple[str, Any]:
+    """(idempotency key of the arguments that would run, the time an identical call already succeeded or None)."""
+    import app.tools.catalog  # noqa: F401
+    from app.models.tool_call import ToolCall
+    from app.tools import journal
+    from app.tools.registry import get_tool
+
+    call = await session.get(ToolCall, approval.tool_call_id) if approval.tool_call_id else None
+    if call is None:
+        return "", None
+    final_args = {**(call.arguments or {}), **(overrides or {})}
+    try:
+        final_args = get_tool(call.tool).input_model.model_validate(final_args).model_dump(mode="json")
+    except Exception:
+        return "", None
+    key = journal.idempotency_key(call.workflow_id, approval.request_payload.get("task_key", ""), call.tool,
+                                  journal.args_hash(final_args))
+    sent = await session.scalar(select(ToolCall.finished_at).where(
+        ToolCall.idempotency_key == key, ToolCall.status == "succeeded", ToolCall.id != call.id)
+        .order_by(ToolCall.finished_at).limit(1))
+    return key, sent
+
+
 async def approve(
     session: AsyncSession, approval_id: uuid.UUID, *, actor: str, comment: str | None,
     input_overrides: dict[str, Any] | None, arguments_overrides: dict[str, Any] | None = None,
-    allow_recipient_override: bool = False,
+    allow_recipient_override: bool = False, confirm_duplicate: bool = False,
 ) -> Approval:
     approval, wf, task = await _lock_pending(session, approval_id)
     changes: dict[str, Any] = {}
     if approval.kind == "tool_call":
+        _, sent_at = await duplicate_of(session, approval, arguments_overrides)
+        if sent_at is not None and not confirm_duplicate:  # never a silent duplicate send
+            await session.rollback()
+            raise ConflictError(f"This exact message was already sent at {sent_at.isoformat()}. Approve again with "
+                                "confirm_duplicate=true to send it anyway.")
         changes = await _approve_tool_call(session, approval, arguments_overrides, allow_recipient_override)
     elif input_overrides:
         old = task.input or {}
@@ -222,7 +268,7 @@ async def approve(
     else:
         approval.comment = comment
     extra = {"approval_id": str(approval.id), "actor": actor, "comment": comment, "input_changes": changes,
-             "kind": approval.kind}
+             "kind": approval.kind, **({"confirm_duplicate": True} if confirm_duplicate else {})}
     if task.status == TaskStatus.AWAITING_APPROVAL:
         await transition_task(session, task, TaskStatus.READY, event_type=EventType.APPROVAL_APPROVED,
                               extra=extra)

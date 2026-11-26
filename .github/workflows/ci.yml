@@ -49,7 +49,6 @@ jobs:
       DATABASE_URL: postgresql+asyncpg://agentflow:agentflow@localhost:5432/agentflow
       TEST_DATABASE_URL: postgresql+asyncpg://agentflow:agentflow@localhost:5432/agentflow_test
       SAMPLE_DATA_URL: postgresql+asyncpg://agentflow_reader:reader@localhost:5432/agentflow_sample
-      LLM_PROVIDER: fake
       APP_ENV: test
     steps:
       - uses: actions/checkout@v4

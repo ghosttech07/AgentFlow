@@ -472,6 +472,7 @@ function approvalHtml(a) {
       ${p.tainted ? `<div class="warnings">This step read content from the web${(p.untrusted_sources || []).length ? ` (${esc(p.untrusted_sources.slice(0, 3).join(", "))})` : ""}, so a person must check it first.</div>` : ""}
       ${(p.injection_warnings || []).length ? `<div class="warnings">Suspicious text found in a web page: ${esc(p.injection_warnings.join("; "))}. It may be trying to trick the agent.</div>` : ""}
       <label class="field">Exactly what will be sent (you can edit it)<textarea class="args" rows="6">${esc(JSON.stringify(p.arguments, null, 2))}</textarea></label>
+      <div class="dup warnings" hidden></div>
       <label class="field">Comment or reason<input class="comment"></label>
       <div class="actions" style="margin:12px 0 0"><button class="btn primary" data-d="approve">${icon("check")} Approve</button>
         <button class="btn" data-d="inform_agent">Don't do it</button><button class="btn danger" data-d="fail_task">Stop this step</button></div></section>`;
@@ -621,6 +622,8 @@ $("content").addEventListener("click", (e) => {
     if (d.dataset.d === "approve") {
       const body = { actor: actor(), comment: comment || null };
       if (card.dataset.kind === "tool_call") {
+        const dup = card.querySelector(".dup-confirm");
+        if (dup) body.confirm_duplicate = dup.checked;
         try { body.arguments_overrides = JSON.parse(card.querySelector(".args").value); }
         catch { throw new Error("The details to send must be valid JSON."); }
       }
@@ -629,6 +632,23 @@ $("content").addEventListener("click", (e) => {
     if (!comment) throw new Error("Add a short reason first (it is recorded).");
     return api("POST", `/approvals/${aid}/reject`, { actor: actor(), reason: comment, on_reject: d.dataset.d });
   }, d.dataset.d === "approve" ? "Approved" : "Recorded");
+});
+/* Duplicate-send check while the approver edits the arguments (Part 10): never a silent second send. */
+let dupTimer = null;
+$("content").addEventListener("input", (e) => {
+  const ta = e.target.closest("textarea.args");
+  if (!ta) return;
+  clearTimeout(dupTimer);
+  dupTimer = setTimeout(async () => {
+    const card = ta.closest("[data-approval]"), box = card.querySelector(".dup");
+    let args; try { args = JSON.parse(ta.value); } catch { box.hidden = true; return; }
+    try {
+      const r = await api("POST", `/approvals/${card.dataset.approval}/check`, { arguments_overrides: args });
+      box.hidden = !r.already_sent_at;
+      box.innerHTML = r.already_sent_at ? `This exact message was already sent at ${esc(new Date(r.already_sent_at).toLocaleString())}.
+        <label style="display:block;margin-top:6px"><input type="checkbox" class="dup-confirm"> Send it again anyway</label>` : "";
+    } catch { box.hidden = true; }
+  }, 400);
 });
 $("content").addEventListener("submit", (e) => {
   if (e.target.id !== "budgetform") return;

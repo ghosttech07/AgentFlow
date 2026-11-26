@@ -22,6 +22,8 @@ os.environ["ADMIN_API_KEY"] = ""  # empty = no auth (overrides .env); test_auth 
 os.environ["APPROVAL_WEBHOOK_URL"] = ""
 os.environ["WEB_SEARCH_PROVIDER"] = "none"  # tests never touch the internet
 os.environ["GEMINI_WORKER_MODEL"] = ""
+# Tests inject fake clients themselves; a shell or CI LLM_PROVIDER=fake must not change what they test.
+os.environ["LLM_PROVIDER"] = "gemini"
 
 import pytest
 from alembic.config import Config

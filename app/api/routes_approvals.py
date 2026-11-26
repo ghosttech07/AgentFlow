@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,7 +13,7 @@ from app.db.session import get_session
 from app.engine import Engine
 from app.engine.deps import get_engine
 from app.schemas.common import ErrorResponse
-from app.schemas.control import ApprovalRead, ApproveRequest, RejectRequest
+from app.schemas.control import ApprovalRead, ApproveRequest, CheckRequest, RejectRequest
 from app.services import approval_service
 
 router = APIRouter(prefix="/approvals", tags=["approvals"])
@@ -45,13 +45,24 @@ async def approve(
     engine: Engine | None = Depends(get_engine),
 ) -> ApprovalRead:
     """Approve (optionally correcting the task input). The task becomes READY."""
+    await approval_service.check_approve_fields(session, approval_id, set(body.model_fields_set))
     approval = await approval_service.approve(session, approval_id, actor=body.actor, comment=body.comment,
                                               input_overrides=body.input_overrides,
                                               arguments_overrides=body.arguments_overrides,
-                                              allow_recipient_override=body.allow_recipient_override)
+                                              allow_recipient_override=body.allow_recipient_override,
+                                              confirm_duplicate=body.confirm_duplicate)
     if engine:
         engine.wake()
     return ApprovalRead.model_validate(approval)
+
+
+@router.post("/{approval_id}/check", responses={404: {"model": ErrorResponse}})
+async def check_approval(approval_id: uuid.UUID, body: CheckRequest,
+                         session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    """Would approving with these arguments repeat a call that already succeeded? (The card warns while editing.)"""
+    approval = await approval_service.get_approval(session, approval_id)
+    key, sent_at = await approval_service.duplicate_of(session, approval, body.arguments_overrides)
+    return {"idempotency_key": key or None, "already_sent_at": sent_at.isoformat() if sent_at else None}
 
 
 @router.post("/{approval_id}/reject", response_model=ApprovalRead, responses=DECISION,

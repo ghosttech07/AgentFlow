@@ -228,6 +228,10 @@ class ToolLoop:
             if row.status in ("awaiting_approval", "approved", "running", "unknown_outcome", "proposed", "superseded"):
                 continue  # handled below (pending / unknown calls); superseded rows were replaced by a later row
             self._absorb(self._view(row))
+            for w in row.injection_warnings or []:  # also after a crash that left no loop_state
+                note = f"{w} ({_source_label(row.tool, row.arguments)})"
+                if note not in self.state.injection_warnings and w not in self.state.injection_warnings:
+                    self.state.injection_warnings.append(note)
         self.state.step_index = max([r.step_index + 1 for r in rows], default=0)
         # Calls whose outcome is open: the approved/denied pending call, or a call a dead attempt was running.
         for row in rows:
@@ -241,6 +245,7 @@ class ToolLoop:
 
     async def _execute_approved(self, row: ToolCall) -> None:
         tool = self.tools.get(row.tool) or get_tool(row.tool)
+        await self._budget_check()  # the cap counts executed rows in the DB, on every execution path
         flags: dict[str, Any] = {}
         if row.approval_id is not None:
             async with self.sf() as s:
@@ -254,6 +259,7 @@ class ToolLoop:
     async def _settle_unknown(self, row: ToolCall) -> None:
         """A dead attempt was running this call: apply the unknown-outcome rules."""
         tool = self.tools.get(row.tool) or get_tool(row.tool)
+        await self._budget_check()
         # Close it for good: the new row (re-run or human decision) replaces it, so it is never settled twice.
         await journal.set_status(self.sf, row.id, "superseded", finished_at=utcnow(),
                                  error="outcome unknown (its attempt ended while it ran); replaced by a new call")

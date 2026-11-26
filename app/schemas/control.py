@@ -43,6 +43,15 @@ class ApproveRequest(BaseModel):
         default=None, description="Tool-call approvals: the arguments to execute (validated against the tool).")
     allow_recipient_override: bool = Field(
         default=False, description="Tool-call approvals: allow recipients outside the email allowlist.")
+    confirm_duplicate: bool = Field(
+        default=False, description="Tool-call approvals: send even though an identical call already succeeded.")
+    extra_iterations: int | None = Field(default=None, ge=1, le=10,
+                                         description="loop_exhausted approvals: grant N more loop iterations.")
+
+
+class CheckRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    arguments_overrides: dict[str, Any] | None = None
 
 
 class RejectRequest(BaseModel):
