@@ -6,6 +6,8 @@ Run with:  uvicorn app.main:app --reload
 from __future__ import annotations
 
 import logging
+import re
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -33,7 +35,7 @@ from app.api import (
 )
 from app.config import PROJECT_ROOT, get_settings
 from app.core.errors import AppError
-from app.core.logging import setup_logging
+from app.core.logging import request_id_var, setup_logging
 from app.tools.startup import log_tools_config
 from app.db.session import SessionLocal, engine
 from app.engine import Engine
@@ -114,6 +116,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("app.shutdown")
 
 
+_SAFE_RID = re.compile(r"^[A-Za-z0-9._:-]{1,100}$")
+
+
+async def request_id_middleware(request: Request, call_next):  # noqa: ANN001, ANN201
+    """X-Request-ID: keep a safe incoming id, else generate one; every log line of this request carries it."""
+    incoming = request.headers.get("x-request-id", "")
+    rid = incoming if _SAFE_RID.match(incoming) else uuid.uuid4().hex[:16]
+    token = request_id_var.set(rid)
+    try:
+        response = await call_next(request)
+    finally:
+        request_id_var.reset(token)
+    response.headers["X-Request-ID"] = rid
+    return response
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
     setup_logging(settings.log_level)
@@ -125,6 +143,7 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
     register_exception_handlers(app)
+    app.middleware("http")(request_id_middleware)
     app.include_router(routes_health.router)
     app.include_router(routes_workflows.router)
     app.include_router(routes_agents.router)

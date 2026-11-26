@@ -156,6 +156,17 @@ details.more summary { cursor: pointer; font-weight: 600; color: var(--ink-2); f
 .log { list-style: none; padding: 0; margin: 10px 0 0; font-size: 13.5px; max-height: 320px; overflow: auto; }
 .log li { display: flex; gap: 12px; padding: 5px 0; border-top: 1px solid var(--line); }
 .log time { color: var(--ink-3); font-variant-numeric: tabular-nums; min-width: 56px; }
+.gantt { display: grid; gap: 6px; margin: 10px 0 4px; }
+.gantt .row { display: grid; grid-template-columns: minmax(90px, 150px) 1fr; gap: 10px; align-items: center; font-size: 13px; }
+.gantt .k { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-2); }
+.gantt .track { position: relative; height: 16px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+.gantt .seg { position: absolute; top: 2px; bottom: 2px; border-radius: 4px; background: var(--ok); min-width: 3px; }
+.gantt .seg.failed, .gantt .seg.worker_lost, .gantt .seg.cancelled { background: var(--bad); }
+.gantt .seg.interrupted, .gantt .seg.budget_paused, .gantt .seg.suspended { background: var(--warn); }
+.gantt .seg.running { background: var(--accent); }
+.gantt .mk { position: absolute; top: -3px; width: 2px; height: 20px; background: var(--ink); opacity: .55; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--ink-3); }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
 .report { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 22px 26px; margin: 0 0 18px; }
 .report h2.title { font-family: var(--brand); font-size: 24px; letter-spacing: -0.02em; margin: 0 0 12px; }
 
@@ -455,7 +466,25 @@ function approvalHtml(a) {
       <button class="btn" data-d="skip_task">Skip this step</button><button class="btn danger" data-d="fail_workflow">Stop the research</button></div></section>`;
 }
 
-let lastResearchHtml = "", toolCalls = {};
+let lastResearchHtml = "", toolCalls = {}, devTools = false;
+api("GET", "/dev/chaos").then(() => { devTools = true; }).catch(() => { devTools = false; });  // 404 in production
+function ganttHtml(tl) {
+  const ends = tl.spans.flatMap((s) => s.attempts.map((a) => a.end_offset_s ?? a.start_offset_s ?? 0));
+  const total = Math.max(1, ...ends, ...tl.entries.map((e) => e.offset_s || 0));
+  const pct = (v) => Math.max(0, Math.min(100, (v / total) * 100));
+  const rows = tl.spans.filter((s) => s.attempts.length).map((s) => `<div class="row"><span class="k" title="${esc(s.task_key)}">${esc(s.task_key)}</span>
+    <div class="track">${s.attempts.map((a) => {
+      const start = a.start_offset_s || 0, end = a.end_offset_s ?? total;
+      return `<span class="seg ${esc(a.outcome)}" style="left:${pct(start)}%;width:${Math.max(0.6, pct(end) - pct(start))}%"
+        title="Attempt ${a.attempt_number}: ${esc(a.outcome)}${a.error_type ? " (" + esc(a.error_type) + ")" : ""}"></span>`
+        + (a.tool_calls || []).map((t) => `<span class="mk" style="left:${pct(t.offset_s || 0)}%" title="${esc(t.tool)}: ${esc(t.status)}"></span>`).join("");
+    }).join("")}</div></div>`).join("");
+  if (!rows) return "";
+  return `<div class="sub">Timeline</div><div class="gantt" role="img" aria-label="Attempts per step over time">${rows}</div>
+    <div class="legend"><span><i style="background:var(--ok)"></i>succeeded</span><span><i style="background:var(--bad)"></i>failed / crashed</span>
+    <span><i style="background:var(--warn)"></i>paused / waiting for approval</span><span><i style="background:var(--accent)"></i>running</span>
+    <span>| tool call</span><span>0 to ${total.toFixed(0)} s</span></div>`;
+}
 const TOOL_STATUS = { succeeded: ["done", "ok"], failed: ["failed", "bad"], rejected_invalid: ["invalid call", "bad"],
   awaiting_approval: ["waiting for approval", "warn"], approved: ["approved", "ok"], denied: ["denied", "bad"],
   running: ["running", ""], unknown_outcome: ["outcome unknown", "warn"] };
@@ -520,6 +549,10 @@ async function showResearch(id, quiet = false) {
         <label class="field">Max AI calls<input name="max_llm_calls" inputmode="numeric" value="${eff.max_llm_calls ?? ""}"></label>
         <label class="field">Max cost ($)<input name="max_cost_usd" inputmode="decimal" value="${eff.max_cost_usd ?? ""}" placeholder="no limit"></label>
         <button class="btn" type="submit">Save limits</button></form>
+      ${tl ? ganttHtml(tl) : ""}
+      ${devTools && ["RUNNING", "AWAITING_APPROVAL"].includes(wf.status) ? `<div class="sub">Development</div>
+        <p class="hint">Kill the server while the next step runs, then restart it to watch recovery. Hidden in production.</p>
+        <button class="btn danger" type="button" data-chaos="1">Simulate a crash</button>` : ""}
       ${tl ? `<div class="sub">Activity</div><ol class="log">${tl.entries.slice().reverse().map((e) => `<li><time>+${e.offset_s.toFixed(1)}s</time><span>${esc(e.text)}</span></li>`).join("")}</ol>` : ""}
     </details>
   </div>`;
@@ -548,6 +581,17 @@ $("content").addEventListener("click", (e) => {
       cancel: () => { const reason = prompt("Cancel this research? Optional reason:"); if (reason === null) throw new Error("Not cancelled."); return api("POST", `/workflows/${id}/cancel`, { actor: actor(), reason: reason || null }); },
     }[a.dataset.a];
     if (run) act(run, { pause: "Paused", resume: "Resumed", retry: "Trying again", cancel: "Cancelled" }[a.dataset.a]);
+    return;
+  }
+  const chaosBtn = e.target.closest("[data-chaos]");
+  if (chaosBtn && route.kind === "r") {
+    act(async () => {
+      const wf = await api("GET", `/workflows/${route.id}`);
+      const t = wf.tasks.find((x) => x.status === "RUNNING") || wf.tasks.find((x) => ["READY", "PENDING"].includes(x.status));
+      if (!t) throw new Error("No step is left to crash.");
+      if (!confirm(`This kills the server process while "${t.name}" runs. Restart it afterwards to see recovery. Continue?`)) throw new Error("Not armed.");
+      return api("POST", "/dev/chaos", { workflow_id: route.id, task_key: t.key, mode: "crash_process" });
+    }, "Crash armed: the server will stop during the next run of that step.");
     return;
   }
   const d = e.target.closest("[data-d]");

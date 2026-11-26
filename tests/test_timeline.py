@@ -61,7 +61,7 @@ async def test_dashboard_is_served(client: AsyncClient) -> None:
     assert resp.status_code == 200 and resp.headers["content-type"].startswith("text/html")
     page = resp.text
     for needle in ("<title>AgentFlow</title>", "/timeline", "/approvals/", "X-API-Key", "const esc",
-                   "/budget", "/ask", "/history", "/asks/", "Deep research", "Voice input isn't available yet"):
+                   "/budget", "/ask", "/history", "/asks/", "Deep research", "Voice input isn't available yet", "ganttHtml", "/dev/chaos"):
         assert needle in page
     assert "/providers" not in page  # removed from the screen on request (still in the API)
     assert "/dashboard" not in (await client.get("/openapi.json")).text  # not part of the API schema
