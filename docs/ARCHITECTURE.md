@@ -73,32 +73,44 @@ stateDiagram-v2
     RUNNING --> COMPLETED
     RUNNING --> FAILED
     RUNNING --> PAUSED
+    RUNNING --> REPLANNING
     PAUSED --> AWAITING_APPROVAL
     PAUSED --> CANCELLED
     PAUSED --> FAILED
+    PAUSED --> REPLANNING
     PAUSED --> RUNNING
     AWAITING_APPROVAL --> CANCELLED
     AWAITING_APPROVAL --> FAILED
     AWAITING_APPROVAL --> PAUSED
+    AWAITING_APPROVAL --> REPLANNING
     AWAITING_APPROVAL --> RUNNING
+    REPLANNING --> CANCELLED
+    REPLANNING --> FAILED
+    REPLANNING --> PAUSED
+    REPLANNING --> RUNNING
     FAILED --> CANCELLED
     FAILED --> PLANNING
+    FAILED --> REPLANNING
     FAILED --> RUNNING
 ```
 
 ### Task states
 RUNNING -> AWAITING_APPROVAL (Part 9) = suspended mid tool loop until a human decides on one tool call.
+SUPERSEDED (Part 10) = replaced by a re-plan (terminal). Workflow REPLANNING (Part 10) = the plan is being patched mid-run.
 
 ```mermaid
 stateDiagram-v2
     [*] --> PENDING
     PENDING --> CANCELLED
+    PENDING --> FAILED
     PENDING --> READY
     PENDING --> SKIPPED
+    PENDING --> SUPERSEDED
     READY --> AWAITING_APPROVAL
     READY --> CANCELLED
     READY --> RUNNING
     READY --> SKIPPED
+    READY --> SUPERSEDED
     AWAITING_APPROVAL --> CANCELLED
     AWAITING_APPROVAL --> FAILED
     AWAITING_APPROVAL --> READY
@@ -115,6 +127,7 @@ stateDiagram-v2
     RETRYING --> RUNNING
     FAILED --> PENDING
     FAILED --> RETRYING
+    FAILED --> SUPERSEDED
 ```
 
 ## Where each guarantee lives

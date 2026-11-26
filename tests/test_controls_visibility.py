@@ -21,6 +21,7 @@ EXPECTED = {
     "COMPLETED":         (False, False, False, False),
     "FAILED":            (False, False, True, True),
     "CANCELLED":         (False, False, False, False),
+    "REPLANNING":        (False, False, True, False),  # Part 10: only cancel while the plan is being patched
 }
 
 

@@ -116,6 +116,16 @@ class Settings(BaseSettings):
     # Part 10 exfiltration guard: caps for reads in tainted / private-data attempts.
     exfil_max_url_length: int = Field(default=500, ge=50)
     exfil_max_query_chars: int = Field(default=200, ge=0)
+
+    # Adaptive workflows (Part 10)
+    max_loop_iterations: int = Field(default=5, ge=1, le=20)
+    max_replans: int = Field(default=2, ge=0, le=10)
+    replan_max_new_tasks: int = Field(default=5, ge=1, le=20)
+    replan_auto_approve_max_tasks: int = Field(default=2, ge=0)
+    memory_enabled: bool = True
+    memory_top_k: int = Field(default=5, ge=0, le=50)
+    memory_fact_ttl_days: int = Field(default=30, ge=1)
+    memory_lesson_ttl_days: int = Field(default=180, ge=1)
     workspaces_dir: Path = PROJECT_ROOT / "outputs" / "workspaces"
     outbox_dir: Path = PROJECT_ROOT / "outputs" / "outbox"
     sample_data_url: str = "postgresql+asyncpg://agentflow_reader:reader@localhost:5432/agentflow_sample"

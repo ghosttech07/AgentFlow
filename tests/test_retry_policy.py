@@ -6,7 +6,7 @@ from datetime import timedelta
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import get_settings
@@ -15,7 +15,7 @@ from app.engine.retry import compute_delay
 from app.engine.scheduler import next_retry_due
 from app.llm.errors import LLMPermanentError, LLMQuotaExhaustedError, LLMTransientError
 from app.llm.fake_client import FakeLLMClient, FakeScript
-from app.models import Task
+from app.models import Task, TaskAttempt
 from tests.engine_helpers import detail, event_types, match, started_workflow, task, tasks_by_key
 from tests.reliability_helpers import attempts, calls_for, outcomes
 
@@ -107,11 +107,14 @@ async def test_retrying_task_not_claimed_before_due(
     t = (await tasks_by_key(client, wf_id))["a"]
     assert t["status"] == "RETRYING" and calls_for(llm, "a") == 1  # not claimed yet
     due = await next_retry_due(session_factory)
-    assert due is not None and 25 < (due - utcnow()).total_seconds() <= 30  # 5 s slack: ticks are slower under load
+    async with session_factory() as s:  # compare stored timestamps, not the wall clock of a busy machine
+        failed_at = await s.scalar(select(TaskAttempt.finished_at).where(TaskAttempt.task_id == uuid.UUID(t["id"])))
+    assert due is not None and 29.5 <= (due - failed_at).total_seconds() <= 30.5  # base 30 s, no jitter
 
-    # The engine loop sleeps until the retry is due (not just the poll interval).
+    # The engine loop sleeps until the retry is due (not the 120 s poll interval).
     engine.settings = engine.settings.model_copy(update={"engine_poll_interval_seconds": 120})
-    assert 25 < await engine._sleep_seconds() <= 30
+    expected = (due - utcnow()).total_seconds()
+    assert abs(await engine._sleep_seconds() - expected) < 1.0 and expected < 120
 
     async with session_factory() as s:  # time passes
         await s.execute(update(Task).where(Task.id == uuid.UUID(t["id"]))

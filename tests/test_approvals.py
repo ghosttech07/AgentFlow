@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import timedelta
 
 from httpx import AsyncClient
 from sqlalchemy import update
@@ -9,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.agents.researcher import ResearchOutput
 from app.core.enums import TaskStatus
+from app.db.base import utcnow
 from app.engine.scheduler import claim_tasks
 from app.llm.errors import LLMTransientError
 from app.llm.fake_client import FakeLLMClient, FakeScript
@@ -124,12 +126,15 @@ async def test_reject_skip_task_cascades_and_completes(client: AsyncClient, make
     assert calls_for(llm, "gate") == calls_for(llm, "w") == calls_for(llm, "v") == 0
 
 
-async def test_expired_approval_fails_workflow(client: AsyncClient, make_engine) -> None:  # noqa: ANN001
+async def test_expired_approval_fails_workflow(client: AsyncClient, make_engine, session_factory) -> None:  # noqa: ANN001
     wf_id = await started_workflow(client, GATED)
-    engine = make_engine(FakeLLMClient(), approval_timeout_hours=2 / 3600)  # 2 s (0.3 s could expire before the first idle under load)
+    engine = make_engine(FakeLLMClient())  # default 24 h expiry; expiry is driven through the DB, not by sleeping
     await engine.run_until_idle()
     a = await only_pending(client, wf_id)
-    await asyncio.sleep(2.1)
+    async with session_factory() as s:  # the deadline passes
+        await s.execute(update(Approval).where(Approval.id == uuid.UUID(a["id"]))
+                        .values(expires_at=utcnow() - timedelta(seconds=1)))
+        await s.commit()
     assert (await approve(client, a["id"])).status_code == 409  # too late, even before the tick
 
     await engine.run_until_idle()

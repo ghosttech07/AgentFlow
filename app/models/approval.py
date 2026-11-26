@@ -31,7 +31,8 @@ class Approval(Base):
         primary_key=True, default=uuid.uuid4, server_default=text("gen_random_uuid()")
     )
     workflow_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workflows.id", ondelete="CASCADE"))
-    task_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
+    # None for workflow-level approvals (Part 10 plan_patch).
+    task_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
     # pending | approved | rejected | expired | cancelled
     status: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending")
     requested_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=func.now())

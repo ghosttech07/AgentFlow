@@ -99,7 +99,7 @@ def test_workflow_terminal_states_have_no_exits() -> None:
     for terminal in WORKFLOW_TERMINAL_STATES:
         assert all(not can_transition_workflow(terminal, s) for s in WorkflowStatus)
     # FAILED only allows resume (Part 5), re-planning (Part 3) or closing it (Part 6).
-    assert WORKFLOW_TRANSITIONS[W.FAILED] == {W.RUNNING, W.PLANNING, W.CANCELLED}
+    assert WORKFLOW_TRANSITIONS[W.FAILED] == {W.RUNNING, W.PLANNING, W.CANCELLED, W.REPLANNING}  # + human re-plan (P10)
 
 
 @pytest.mark.parametrize(
@@ -143,8 +143,8 @@ def test_disallowed_task_transitions(src: TaskStatus, dst: TaskStatus) -> None:
 
 
 def test_task_terminal_states_have_no_exits() -> None:
-    assert TASK_TERMINAL_STATES == {T.SUCCEEDED, T.CANCELLED, T.SKIPPED}
-    assert TASK_TRANSITIONS[T.FAILED] == {T.RETRYING, T.PENDING}
+    assert TASK_TERMINAL_STATES == {T.SUCCEEDED, T.CANCELLED, T.SKIPPED, T.SUPERSEDED}
+    assert TASK_TRANSITIONS[T.FAILED] == {T.RETRYING, T.PENDING, T.SUPERSEDED}  # SUPERSEDED: replaced by a re-plan
 
 
 # ---------------------------------------------------------------- persisted transitions
