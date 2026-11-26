@@ -15,6 +15,7 @@ CONTROL_CALLS = [
     ("post", f"/workflows/{ZERO}/retry", None),
     ("post", f"/approvals/{ZERO}/approve", {"actor": "a"}),
     ("post", f"/approvals/{ZERO}/reject", {"actor": "a", "reason": "r"}),
+    ("patch", f"/workflows/{ZERO}/budget", {"budget": {"max_llm_calls": 5}}),
 ]
 
 

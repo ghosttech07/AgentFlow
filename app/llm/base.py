@@ -24,6 +24,10 @@ class LLMResponse:
     output_tokens: int = 0
     latency_ms: int = 0
     sources: list[Source] = field(default_factory=list)
+    provider: str = "gemini"
+    cost_usd: float | None = None  # None = price unknown (never guessed)
+    fallback_from: str | None = None  # "provider:model" of the first route entry when a fallback answered
+    route_position: int = 0  # index of the answering entry in the role's route
 
 
 class LLMClient(Protocol):
@@ -35,10 +39,12 @@ class LLMClient(Protocol):
         use_search: bool = False,
         thinking_level: str | None = None,
         model: str | None = None,
+        role: str | None = None,
     ) -> LLMResponse:
         """Return output validated against `output_model`, or raise an app.llm.errors.LLMError.
 
         thinking_level: "minimal" | "low" | "medium" | "high"; clients may ignore it.
         model: preferred model for this call (e.g. a fast worker model); None = the client default.
+        role: the agent role (planner, researcher, ..., ask); the Part 8 router picks its route from it.
         """
         ...

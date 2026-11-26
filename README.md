@@ -62,6 +62,7 @@ Each demo starts its own server on port 8765, so stop any other server on the sa
 |---|---|
 | `python scripts/crash_demo.py --fake` | **The headline demo.** Runs a workflow, kills the server (`os._exit`) while the writer runs, reads the DB while it's down (finished tasks SUCCEEDED, writer still RUNNING), restarts, and shows `engine.recovered`. The writer resumes (attempt 1 `worker_lost`, attempt 2 `succeeded`), the workflow completes and nothing finished is redone. Ends with the timeline and **PASS/FAIL**. Drop `--fake` to use Gemini. |
 | `python scripts/controls_demo.py` | A: pause (no new tasks for 5s), resume, approve the publish step with an edited title; it is published exactly once. B: reject with `skip_task`; the workflow completes with nothing published. C: cancel while tasks run; in-flight results are discarded. |
+| `python scripts/budget_demo.py` | A workflow with `max_llm_calls: 3` pauses at the limit, the budget is raised, it resumes and completes (fake LLM). |
 | `python scripts/run_workflow.py "<goal>"` | Runs any goal against a running server with a live progress table, then prints the final text. |
 
 ## How it works
@@ -78,14 +79,59 @@ Each demo starts its own server on port 8765, so stop any other server on the sa
 ### Failure handling at a glance
 - **Transient errors** (timeouts, 429 per minute, 5xx, overloaded) are retried with backoff and
   `retry_after` is respected. **Permanent errors, quota exhaustion and rejections** are not retried.
-- **Overloaded model**: the next model in `GEMINI_FALLBACK_MODELS` is tried; the model actually
-  used is recorded on the task.
+- **Overloaded, out-of-quota or missing model**: the router tries the next `provider:model` in the
+  role's route (across Gemini, Claude, OpenAI and local Ollama); the one actually used, its cost and
+  any fallback are recorded on the task.
 - **Process crash**: on restart, RUNNING tasks are reclaimed as `worker_lost` and retried, and
   interrupted planning is re-planned. SUCCEEDED tasks are never re-run.
 - **Side effects**: the publisher is idempotent (`<workflow>:<task>` unique key), so a crash or
   retry never publishes twice.
 - **Fault injection (dev only)**: `POST /dev/chaos` can crash the process, raise transient,
   overloaded or permanent errors, or hang a chosen task.
+
+## Multi-provider AI and cost control
+
+AgentFlow talks to **Gemini, Anthropic Claude, OpenAI and local Ollama** (free) through one router.
+With only `GEMINI_API_KEY` set and no `config/models.yaml`, everything behaves exactly like before.
+
+**Routes (`config/models.yaml`).** Each agent role gets an ordered list of `provider:model` entries;
+roles without their own route use `default`. Copy a profile from
+[config/models.example.yaml](config/models.example.yaml) (Gemini-only, free dev with Ollama first,
+best quality across providers). List what your keys and machine actually offer with
+`python scripts/list_provider_models.py`.
+```yaml
+routes:
+  default: ["gemini:gemini-3.5-flash-lite", "gemini:gemini-3.1-flash-lite", "ollama:llama3.2:3b"]
+  planner: ["gemini:gemini-3.5-flash", "gemini:gemini-3.5-flash-lite", "ollama:llama3.2:3b"]
+quotas:
+  "gemini:gemini-3.5-flash": {requests_per_day: 20, timezone: America/Los_Angeles}
+```
+- Fallback to the next entry on overload, exhausted quota, unknown model and timeouts. Never on bad
+  output (after one repair) or bad keys (logged as an ERROR: fix the key).
+- A provider without a key, or an Ollama that is not running, is skipped with a warning; a role with
+  no usable entry stops the app at startup with a clear message.
+- `LLM_PROVIDER=fake` routes everything to canned answers (tests, demos).
+
+**Prices (`config/pricing.yaml`).** USD per 1M input/output tokens per `provider:model`. Verify them
+against each provider's pricing page. Ollama and fake cost $0; an unknown model is recorded with
+cost `null` (never guessed) and one warning.
+
+**Budgets.** `POST /workflows {..., "budget": {"max_cost_usd": 0.5, "max_tokens": 200000,
+"max_llm_calls": 30, "max_duration_seconds": 600}}` (all optional; `DEFAULT_MAX_LLM_CALLS=50` is a
+safety net). When a limit is reached the workflow is **paused, not failed**: work in flight finishes,
+nothing new starts, and `workflow.budget_exceeded` says which limit. A call whose estimated cost
+would cross `max_cost_usd` is stopped before it is made. Raise the limit with
+`PATCH /workflows/{id}/budget {"actor": "...", "budget": {...}}`, then resume. Planner calls count.
+`GET /workflows/{id}` shows `budget`, `usage` and `remaining`.
+
+**Quotas.** Every real call is counted per provider:model in the database (atomically, failed calls
+included), so daily limits survive restarts and multiple engines. A used-up entry, or one the
+provider reported as out of quota, is skipped until its window resets at midnight in its timezone.
+
+**See it.** `GET /providers` (keys shown only as present/absent, circuit state, today's usage vs
+quota), `GET /metrics/summary` (calls, errors, latency and cost per provider), the timeline's cost by
+provider and fallback count, and the dashboard's budget meters and Providers panel.
+`python scripts/budget_demo.py` shows a budget pause, PATCH and resume end to end (fake LLM).
 
 ## API
 
@@ -104,6 +150,8 @@ Each demo starts its own server on port 8765, so stop any other server on the sa
 | POST | `/approvals/{id}/approve` · `/reject` 🔑 | Decide (`actor`, `comment`, `input_overrides` / `reason`, `on_reject`) |
 | POST | `/plans/preview` | Plan a goal without storing anything |
 | GET | `/agents`, `/engine/status` | Agent catalog, engine state |
+| PATCH | `/workflows/{id}/budget` 🔑 | Raise or change budget limits (then resume) |
+| GET | `/providers`, `/metrics/summary` | Provider status and quotas; LLM cost, latency and errors |
 | GET | `/dashboard` | Web dashboard |
 
 🔑 requires the `X-API-Key` header when `ADMIN_API_KEY` is set (always set it in production).
@@ -125,7 +173,12 @@ Invoke-RestMethod -Method Post "http://127.0.0.1:8000/approvals/$($a.id)/approve
 |---|---|---|
 | `DATABASE_URL`, `TEST_DATABASE_URL` | local Docker Postgres | Tests only ever touch the `agentflow_test` database |
 | `GEMINI_API_KEY`, `GEMINI_MODEL` | –, `gemini-3.5-flash` | Free tier: about 20 requests/day on this model |
-| `GEMINI_FALLBACK_MODELS` | – | e.g. `gemini-3.5-flash-lite,gemini-3.1-flash-lite` |
+| `GEMINI_FALLBACK_MODELS` | – | Legacy fallback chain when there is no models.yaml |
+| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | – | Optional; a provider without a key is skipped |
+| `OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Local Ollama (free), used when it is running |
+| `MODELS_CONFIG_PATH`, `PRICING_CONFIG_PATH` | `config/models.yaml`, `config/pricing.yaml` | Routes + quotas, prices |
+| `QUOTA_TIMEZONE` | `UTC` | When daily quota windows reset (per-entry override in models.yaml) |
+| `DEFAULT_MAX_COST_USD`, `DEFAULT_MAX_TOKENS`, `DEFAULT_MAX_LLM_CALLS`, `DEFAULT_MAX_DURATION_SECONDS` | –, –, 50, – | Default workflow budget |
 | `LLM_PROVIDER` | `gemini` | `fake` = canned output, no network (demos, development) |
 | `GEMINI_WORKER_MODEL` | – | Fast model for workers + Quick Ask, e.g. `gemini-3.5-flash-lite` (planner keeps `GEMINI_MODEL`) |
 | `WEB_SEARCH_PROVIDER` | `auto` | Live web research: Tavily if `TAVILY_API_KEY` is set, else free metasearch (no key); `none` = off |
@@ -142,7 +195,8 @@ The full list with comments is in [.env.example](.env.example).
 
 ```powershell
 pytest            # ~300 tests against the real agentflow_test Postgres; fake LLM, no network, no cost
-pytest -m live -s # 4 live tests with real Gemini calls (~10 requests of your daily quota)
+pytest -m live_ollama -s   # free: local Ollama structured call + a 3-task workflow
+pytest -m live_gemini -s   # one small Gemini call (also: live_anthropic, live_openai when keys are set)
 ```
 The suite rebuilds the test schema from the Alembic migrations (downgrade → upgrade), truncates
 tables between tests and fails if the models drift from the migrations. Engine tests drive the real

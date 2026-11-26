@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, ForeignKey, Identity, Index, Integer, String, Text, UniqueConstraint, func, text
+from sqlalchemy import BigInteger, ForeignKey, Identity, Index, Integer, Numeric, String, Text, UniqueConstraint, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, utcnow
@@ -38,6 +38,8 @@ class TaskAttempt(Base):
     input_tokens: Mapped[int | None] = mapped_column(Integer)
     output_tokens: Mapped[int | None] = mapped_column(Integer)
     latency_ms: Mapped[int | None] = mapped_column(Integer)
+    provider: Mapped[str | None] = mapped_column(String(32))  # Part 8
+    cost_usd: Mapped[float | None] = mapped_column(Numeric(12, 6, asdecimal=False))  # Part 8; None = unknown
 
 
 class ChaosRule(Base):

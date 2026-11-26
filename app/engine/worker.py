@@ -30,7 +30,8 @@ from app.engine.context import build_agent_input
 from app.engine.retry import close_attempt, fail_or_retry
 from app.engine.scheduler import Claim, task_metrics
 from app.llm.base import LLMClient
-from app.llm.errors import LLMError
+from app.llm.context import CallContext, use_context
+from app.llm.errors import BudgetPause, LLMError
 from app.models.task import Task
 
 logger = logging.getLogger(__name__)
@@ -65,10 +66,11 @@ async def execute_task(
     # The session is closed here: nothing is locked while the model thinks.
 
     logger.info("task.running key=%s agent=%s attempt=%d", key, agent_type, claim.attempt)
-    agent_call = asyncio.create_task(
-        _run_agent(agent_type, agent_input, llm, session_factory, workflow_id, key, settings, has_chaos),
-        name=f"agent-{key}",
-    )
+    with use_context(CallContext(workflow_id, claim.task_id)):  # inherited by the agent's asyncio task
+        agent_call = asyncio.create_task(
+            _run_agent(agent_type, agent_input, llm, session_factory, workflow_id, key, settings, has_chaos),
+            name=f"agent-{key}",
+        )
     lease_lost = asyncio.Event()
     heartbeat = asyncio.create_task(
         _heartbeat(session_factory, claim, worker_id, settings, lease_lost, agent_call),
@@ -82,6 +84,8 @@ async def execute_task(
             return False
         agent_call.cancel()
         raise  # shutdown: leave the task RUNNING with its lease (recovery reclaims it)
+    except BudgetPause as pause:  # the router paused the workflow before calling: not a failure
+        return await _budget_return(session_factory, claim, worker_id, pause.reason)
     except Exception as exc:
         error_type = classify_failure(exc)
         message = getattr(exc, "message", None) or str(exc) or type(exc).__name__
@@ -182,10 +186,11 @@ async def _save(
             task.error = task.error_type = None
             await close_attempt(session, task.id, outcome="succeeded", model=result.model,
                                 input_tokens=result.input_tokens, output_tokens=result.output_tokens,
-                                latency_ms=result.latency_ms)
+                                latency_ms=result.latency_ms, provider=result.provider, cost_usd=result.cost_usd)
             await transition_task(
                 session, task, TaskStatus.SUCCEEDED, event_type=EventType.TASK_SUCCEEDED,
-                extra={"attempt": task.attempt_count, "model": result.model,
+                extra={"attempt": task.attempt_count, "model": result.model, "provider": result.provider,
+                       "cost_usd": result.cost_usd, "fallback_from": result.fallback_from,
                        "latency_ms": result.latency_ms, "input_tokens": result.input_tokens,
                        "output_tokens": result.output_tokens},
             )
@@ -201,3 +206,25 @@ async def _save(
                            task.key, task.attempt_count, error_type, new_status, message)
         await session.commit()
         return True
+
+
+async def _budget_return(
+    session_factory: async_sessionmaker[AsyncSession], claim: Claim, worker_id: str, limit: str
+) -> bool:
+    """The budget paused the workflow before this task's call: hand the task back (READY) without
+    using up a retry, exactly like an immediate-pause interruption (attempt_count stays the fencing
+    token; max_attempts += 1)."""
+    async with session_factory() as session:
+        task = await session.scalar(select(Task).where(Task.id == claim.task_id).with_for_update())
+        if (task is None or task.status != TaskStatus.RUNNING or task.lease_owner != worker_id
+                or task.attempt_count != claim.attempt):
+            await session.rollback()
+            return False
+        await close_attempt(session, task.id, outcome="budget_paused", error=f"Budget reached: {limit}")
+        task.lease_owner = task.lease_expires_at = None
+        task.max_attempts += 1
+        await transition_task(session, task, TaskStatus.READY, event_type=EventType.TASK_INTERRUPTED,
+                              reason="budget_exceeded", extra={"limit": limit, "attempt": task.attempt_count})
+        await session.commit()
+    logger.warning("task.budget_paused task=%s limit=%s (returned to READY)", claim.task_id, limit)
+    return True

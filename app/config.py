@@ -41,6 +41,19 @@ class Settings(BaseSettings):
     gemini_model: str = "gemini-3.5-flash"
     gemini_timeout_seconds: float = 60.0
     gemini_temperature: float = 0.3
+    # Multi-provider AI + cost control (Part 8). Keys are optional: a provider without one is skipped.
+    anthropic_api_key: SecretStr | None = None
+    openai_api_key: SecretStr | None = None
+    ollama_base_url: str = "http://localhost:11434/v1"
+    llm_timeout_seconds: float = Field(default=120.0, gt=0)  # Anthropic / OpenAI / Ollama calls
+    models_config_path: Path = Path("config/models.yaml")
+    pricing_config_path: Path = Path("config/pricing.yaml")
+    quota_timezone: str = "UTC"  # Google resets daily quotas at midnight America/Los_Angeles
+    default_max_cost_usd: float | None = Field(default=None, ge=0)
+    default_max_tokens: int | None = Field(default=None, ge=1)
+    default_max_llm_calls: int | None = Field(default=50, ge=1)  # safety net against runaway loops
+    default_max_duration_seconds: float | None = Field(default=None, gt=0)
+    default_estimated_output_tokens: int = Field(default=1500, ge=1)  # pre-call cost estimate
     # Model for the worker agents (researcher, analyst, writer, reviewer, Quick Ask). Empty = GEMINI_MODEL.
     # A lite model is ~10x faster and has its own free quota; the planner keeps GEMINI_MODEL.
     gemini_worker_model: str | None = None
@@ -110,7 +123,9 @@ class Settings(BaseSettings):
     def _upper_log_level(cls, value: object) -> object:
         return value.upper() if isinstance(value, str) else value
 
-    @field_validator("admin_api_key", "approval_webhook_url", "gemini_worker_model", "tavily_api_key", mode="before")
+    @field_validator("admin_api_key", "approval_webhook_url", "gemini_worker_model", "tavily_api_key",
+                     "anthropic_api_key", "openai_api_key", "default_max_cost_usd", "default_max_tokens",
+                     "default_max_llm_calls", "default_max_duration_seconds", mode="before")
     @classmethod
     def _empty_is_none(cls, value: object) -> object:
         return None if isinstance(value, str) and not value.strip() else value

@@ -43,7 +43,7 @@ async def ask(question: str, llm: LLMClient, settings: Settings) -> dict[str, An
     prompt = f"## TODAY\n{today()}\n\n## QUESTION\n{question}\n\n{ctx.as_prompt(today())}"
     response = await llm.generate_structured(
         system_prompt=SYSTEM_PROMPT, user_prompt=prompt, output_model=AskOutput,
-        thinking_level=settings.worker_thinking_level, model=settings.gemini_worker_model,
+        thinking_level=settings.worker_thinking_level, model=settings.gemini_worker_model, role="ask",
     )
     out: AskOutput = response.data  # type: ignore[assignment]
     cited = cited_numbers([out.answer, *out.key_points])

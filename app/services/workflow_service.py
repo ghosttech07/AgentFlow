@@ -121,7 +121,8 @@ async def create_workflow(session: AsyncSession, data: WorkflowCreate) -> Workfl
     if data.run and data.constraints:  # kept for the engine's background planner
         context["plan_constraints"] = data.constraints.model_dump(exclude_none=True)
     workflow = Workflow(
-        id=uuid.uuid4(), name=data.name, goal=data.goal, context=context, run_requested=data.run
+        id=uuid.uuid4(), name=data.name, goal=data.goal, context=context, run_requested=data.run,
+        budget=data.budget.stored() if data.budget else None,
     )
     tasks = build_tasks(workflow.id, data.tasks)
     workflow.tasks = tasks
@@ -352,3 +353,21 @@ async def list_attempts(session: AsyncSession, workflow_id: uuid.UUID, key: str)
         select(TaskAttempt).where(TaskAttempt.task_id == task.id).order_by(TaskAttempt.attempt_number)
     )
     return list(rows.all())
+
+
+
+# --------------------------------------------------------------------------------------
+# Cost control (Part 8)
+# --------------------------------------------------------------------------------------
+
+
+async def detail_with_usage(session: AsyncSession, workflow: Workflow) -> Any:
+    """WorkflowDetail plus budget usage and remaining (one aggregate query over llm_calls)."""
+    from app.schemas.workflow import WorkflowDetail
+    from app.services import budget_service
+
+    detail = WorkflowDetail.from_model(workflow)
+    usage = await budget_service.get_usage(session, workflow)
+    detail.usage = usage.as_dict()
+    detail.remaining = budget_service.remaining(detail.effective_budget, usage)
+    return detail

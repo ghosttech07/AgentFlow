@@ -29,7 +29,7 @@ from app.engine.retry import open_attempt, reclaim_lost_task
 from app.models.approval import Approval
 from app.models.task import Task
 from app.models.workflow import Workflow
-from app.services import approval_service, planning_service
+from app.services import approval_service, budget_service, planning_service
 from app.services.notify import notify_approval
 from app.services.workflow_service import start_workflow_locked
 
@@ -159,6 +159,15 @@ async def schedule_workflow(
         await _complete(session, wf, tasks)
         await session.commit()
         return changes + 1
+
+    # Budget (Part 8): a reached limit pauses the workflow here, after the failure and
+    # completion rules (a finished workflow is never paused) and before anything is promoted or claimed (claim_tasks only takes READY tasks of RUNNING workflows).
+    eff = budget_service.effective_budget(wf.budget, settings)
+    usage = await budget_service.get_usage(session, wf)
+    if (limit := budget_service.exceeded(eff, usage)) is not None:
+        await budget_service.pause_locked(session, wf, limit, usage, eff)
+        await session.commit()
+        return 1
 
     now = utcnow()
     for t in tasks:
@@ -312,6 +321,10 @@ async def next_retry_due(session_factory: async_sessionmaker[AsyncSession]) -> d
 def task_metrics(result: Any) -> dict[str, Any]:
     """Metrics stored on a task from an AgentResult."""
     return {
+        "provider": getattr(result, "provider", None),
+        "cost_usd": getattr(result, "cost_usd", None),
+        "fallback_from": getattr(result, "fallback_from", None),
+        "route_position": getattr(result, "route_position", 0),
         "model": result.model,
         "input_tokens": result.input_tokens,
         "output_tokens": result.output_tokens,

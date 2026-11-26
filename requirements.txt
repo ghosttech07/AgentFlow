@@ -12,6 +12,11 @@ alembic>=1.13,<2.0
 # --- LLM (official Google Gen AI SDK; NOT the deprecated google-generativeai) ---
 google-genai>=1.75,<2.0
 
+# --- Multi-provider AI (Part 8): official SDKs; openai also serves local Ollama's OpenAI-compatible API ---
+anthropic>=2.14,<3.0
+openai>=3.59,<4.0
+pyyaml>=6.0,<7.0
+
 # --- Live web research (free: metasearch without an API key + main-text extraction) ---
 ddgs>=9.16,<10.0
 trafilatura>=2.0,<3.0

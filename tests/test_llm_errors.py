@@ -166,3 +166,53 @@ async def test_single_step_grounding_for_gemini_3() -> None:
     )
     (call,) = sdk.calls
     assert call["config"].tools and call["config"].response_mime_type == "application/json"
+
+
+# --------------------------------------------------------------------- Part 8 taxonomy additions
+
+def test_timeout_maps_to_timeout_error_type() -> None:
+    from app.llm.errors import LLMTimeoutError, classify_exception
+
+    err = classify_exception(TimeoutError())
+    assert isinstance(err, LLMTimeoutError) and err.error_type == "timeout" and err.retryable
+
+
+def test_auth_errors_map_to_auth_class() -> None:
+    from app.llm.errors import LLMAuthError, LLMPermanentError, classify_exception
+    from tests.test_errors_classification import BAD_KEY, api_error
+
+    unauthorized = {"error": {"code": 401, "status": "UNAUTHENTICATED", "message": "Request had invalid credentials."}}
+    forbidden = {"error": {"code": 403, "status": "PERMISSION_DENIED", "message": "Permission denied."}}
+    for payload in (unauthorized, forbidden, BAD_KEY):
+        err = classify_exception(api_error(payload))
+        assert isinstance(err, LLMAuthError) and isinstance(err, LLMPermanentError), payload
+        assert err.error_type == "permanent"
+
+
+def test_llm_response_has_provider_cost_and_route_fields() -> None:
+    from app.llm.base import LLMResponse
+
+    r = LLMResponse(data=None, raw_text="", model="m")  # type: ignore[arg-type]
+    assert (r.provider, r.cost_usd, r.fallback_from, r.route_position) == ("gemini", None, None, 0)
+
+
+def test_part8_settings_defaults() -> None:
+    from app.config import Settings
+
+    f = Settings.model_fields
+    assert f["ollama_base_url"].default == "http://localhost:11434/v1"
+    assert f["quota_timezone"].default == "UTC"
+    assert f["default_max_llm_calls"].default == 50
+    assert f["default_max_cost_usd"].default is None and f["default_max_tokens"].default is None
+    assert f["default_max_duration_seconds"].default is None
+    assert str(f["models_config_path"].default).replace("\\", "/") == "config/models.yaml"
+    assert str(f["pricing_config_path"].default).replace("\\", "/") == "config/pricing.yaml"
+
+
+def test_empty_budget_env_values_mean_unlimited() -> None:
+    from app.config import Settings
+
+    s = Settings(default_max_cost_usd="", default_max_tokens="", default_max_duration_seconds="",
+                 anthropic_api_key="", openai_api_key="")
+    assert (s.default_max_cost_usd, s.default_max_tokens, s.default_max_duration_seconds) == (None, None, None)
+    assert s.anthropic_api_key is None and s.openai_api_key is None

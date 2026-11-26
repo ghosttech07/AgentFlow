@@ -14,6 +14,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app import __version__
@@ -26,9 +27,10 @@ from app.api import (
     routes_engine,
     routes_health,
     routes_plans,
+    routes_providers,
     routes_workflows,
 )
-from app.config import get_settings
+from app.config import PROJECT_ROOT, get_settings
 from app.core.errors import AppError
 from app.core.logging import setup_logging
 from app.db.session import SessionLocal, engine
@@ -97,7 +99,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.warning("=" * 72)
     app.state.engine = None
     if settings.engine_enabled:
-        app.state.engine = Engine(SessionLocal, get_llm_client(), settings)
+        llm = get_llm_client()
+        if hasattr(llm, "ensure_started"):  # validate models.yaml + build providers before serving
+            await llm.ensure_started()
+        app.state.engine = Engine(SessionLocal, llm, settings)
         await app.state.engine.start()
     yield
     if app.state.engine is not None:
@@ -123,9 +128,12 @@ def create_app() -> FastAPI:
     app.include_router(routes_plans.router)
     app.include_router(routes_engine.router)
     app.include_router(routes_ask.router)
+    app.include_router(routes_providers.router)
     app.include_router(routes_approvals.router)
     app.include_router(routes_dashboard.router)
     app.include_router(routes_dev.router)
+    # Dashboard assets (self-hosted fonts); the page itself is GET /dashboard.
+    app.mount("/static", StaticFiles(directory=PROJECT_ROOT / "app" / "static"), name="static")
     return app
 
 

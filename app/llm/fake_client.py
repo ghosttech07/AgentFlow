@@ -68,11 +68,12 @@ class FakeLLMClient:
         use_search: bool = False,
         thinking_level: str | None = None,
         model: str | None = None,
+        role: str | None = None,
     ) -> LLMResponse:
         self.calls.append(
             {"system_prompt": system_prompt, "user_prompt": user_prompt,
              "output_model": output_model, "use_search": use_search,
-             "thinking_level": thinking_level, "model": model}
+             "thinking_level": thinking_level, "model": model, "role": role}
         )
         script = next((s for s in self.scripts
                        if s.match in user_prompt and (s.times is None or s.times > 0)), None)

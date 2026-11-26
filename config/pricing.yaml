@@ -1,0 +1,15 @@
+# USD per 1M tokens, per "provider:model". VERIFY AGAINST EACH PROVIDER'S CURRENT PRICING PAGE:
+# prices change and AgentFlow never guesses: a model missing here is recorded with cost = null
+# (one WARNING), and budgets can only enforce max_cost_usd for calls whose price is known.
+# Local Ollama and the fake provider are always $0 and need no entry.
+prices:
+  # Gemini: third-party sources Nov 2026 (simonwillison.net 2026-05-19, developersdigest.tech);
+  # confirm at https://ai.google.dev/gemini-api/docs/pricing. Free-tier calls are billed $0 by Google,
+  # but recording the paid-tier price keeps budgets meaningful if billing is turned on.
+  "gemini:gemini-3.5-flash":      {input: 1.50, output: 9.00}
+  "gemini:gemini-3.5-flash-lite": {input: 0.30, output: 2.50}
+  # Anthropic: Claude API price list (cached 2026-11-03); confirm at https://www.anthropic.com/pricing
+  "anthropic:claude-opus-5-5":    {input: 4.00, output: 20.00}
+  "anthropic:claude-sonnet-5-5":  {input: 2.00, output: 10.00}
+  "anthropic:claude-haiku-5-5":   {input: 0.10, output: 0.50}
+  # OpenAI: add the models you use from https://openai.com/api/pricing (none verified here yet).

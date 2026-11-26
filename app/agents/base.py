@@ -30,6 +30,10 @@ class AgentResult(BaseModel):
     output_tokens: int
     latency_ms: int
     sources: list[Source] = Field(default_factory=list)
+    provider: str = "gemini"  # Part 8: which provider:model answered, its cost and fallback
+    cost_usd: float | None = None
+    fallback_from: str | None = None
+    route_position: int = 0
 
 
 class BaseAgent(ABC):
@@ -84,6 +88,7 @@ class BaseAgent(ABC):
             use_search=self.use_search and self.settings.enable_search_grounding,
             thinking_level=self.resolve_thinking_level(),
             model=self.resolve_model(),
+            role=self.agent_type,
         )
         data = self.postprocess(response.data, response)
         return AgentResult(
@@ -94,4 +99,8 @@ class BaseAgent(ABC):
             output_tokens=response.output_tokens,
             latency_ms=response.latency_ms,
             sources=response.sources,
+            provider=response.provider,
+            cost_usd=response.cost_usd,
+            fallback_from=response.fallback_from,
+            route_position=response.route_position,
         )

@@ -52,6 +52,9 @@ class EventType(StrEnum):
     APPROVAL_APPROVED = "approval.approved"
     APPROVAL_REJECTED = "approval.rejected"
     APPROVAL_EXPIRED = "approval.expired"
+    # Cost control (Part 8)
+    WORKFLOW_BUDGET_EXCEEDED = "workflow.budget_exceeded"
+    WORKFLOW_BUDGET_UPDATED = "workflow.budget_updated"
 
 
 def record_event(

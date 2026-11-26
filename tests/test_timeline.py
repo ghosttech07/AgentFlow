@@ -60,6 +60,9 @@ async def test_dashboard_is_served(client: AsyncClient) -> None:
     resp = await client.get("/dashboard")
     assert resp.status_code == 200 and resp.headers["content-type"].startswith("text/html")
     page = resp.text
-    for needle in ("<title>AgentFlow Dashboard</title>", "/timeline", "/approvals/", "X-API-Key", "const esc"):
+    for needle in ("<title>AgentFlow Dashboard</title>", "/timeline", "/approvals/", "X-API-Key", "const esc",
+                   "/providers", "/budget", "/ask", "fallback from"):
         assert needle in page
     assert "/dashboard" not in (await client.get("/openapi.json")).text  # not part of the API schema
+    font = await client.get("/static/fonts/CourierPrime-Regular.ttf")
+    assert font.status_code == 200 and len(font.content) > 10_000  # self-hosted, no third-party font host

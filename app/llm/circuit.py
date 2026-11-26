@@ -48,6 +48,10 @@ class CircuitBreaker:
             return True
         return False
 
+    def release(self, model: str) -> None:
+        """Give back a half-open trial without an outcome (the call was cancelled)."""
+        self._state(model).trial_in_flight = False
+
     def record_success(self, model: str) -> None:
         self._states[model] = _State()
 

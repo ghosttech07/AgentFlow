@@ -19,9 +19,9 @@ from app.schemas.control import CancelRequest, PauseRequest, ResumeRequest
 from app.schemas.event import EventRead
 from app.schemas.plan import PlanRequest, WorkflowGraph
 from app.schemas.task import TaskRead
-from app.schemas.workflow import WorkflowCreate, WorkflowDetail, WorkflowList, WorkflowRead
+from app.schemas.workflow import BudgetUpdate, WorkflowCreate, WorkflowDetail, WorkflowList, WorkflowRead
 from app.llm import LLMClient, get_llm_client
-from app.services import control_service, planning_service, timeline_service, workflow_service
+from app.services import budget_service, control_service, planning_service, timeline_service, workflow_service
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
 
@@ -193,7 +193,19 @@ async def get_workflow(
     workflow_id: uuid.UUID, session: AsyncSession = Depends(get_session)
 ) -> WorkflowDetail:
     workflow = await workflow_service.get_workflow(session, workflow_id)
-    return WorkflowDetail.from_model(workflow)
+    return await workflow_service.detail_with_usage(session, workflow)
+
+
+@router.patch("/{workflow_id}/budget", response_model=WorkflowDetail, dependencies=[Depends(require_admin)],
+              responses=CONTROL)
+async def update_workflow_budget(
+    workflow_id: uuid.UUID, body: BudgetUpdate, session: AsyncSession = Depends(get_session),
+) -> WorkflowDetail:
+    """Raise or adjust budget limits (merged onto the current ones; null = unlimited). A workflow
+    paused for its budget stays PAUSED: resume it with POST /workflows/{id}/resume."""
+    await budget_service.update_budget(session, workflow_id, actor=body.actor, budget=body.budget.stored())
+    workflow = await workflow_service.get_workflow(session, workflow_id)
+    return await workflow_service.detail_with_usage(session, workflow)
 
 
 @router.post(
