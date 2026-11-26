@@ -3,3 +3,5 @@ import app.tools.web_fetch  # noqa: F401
 import app.tools.web_search  # noqa: F401
 import app.tools.http_request  # noqa: F401
 import app.tools.sql_query  # noqa: F401
+import app.tools.calculator  # noqa: F401
+import app.tools.files  # noqa: F401
