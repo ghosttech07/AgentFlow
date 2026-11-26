@@ -21,10 +21,9 @@ pyyaml>=6.0,<7.0
 ddgs>=9.16,<10.0
 trafilatura>=2.0,<3.0
 
-# --- Tools (Part 9): read-only SQL parsing, HTML fallback extractor, optional Tavily search backend ---
+# --- Tools (Part 9): read-only SQL parsing, HTML fallback extractor (Tavily uses its REST API via httpx) ---
 sqlglot>=30.35,<31.0
 beautifulsoup4>=4.15,<5.0
-tavily-python>=0.8,<1.0
 
 # --- Config / schemas ---
 pydantic>=2.7,<3.0
