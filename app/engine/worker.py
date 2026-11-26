@@ -36,6 +36,7 @@ from app.engine.scheduler import Claim, task_metrics
 from app.llm.base import LLMClient
 from app.llm.context import CallContext, use_context
 from app.llm.errors import BudgetPause, LLMError
+from app.tools.loop import ToolApprovalNeeded
 from app.models.task import Task
 
 logger = logging.getLogger(__name__)
@@ -91,6 +92,8 @@ async def execute_task(
         raise  # shutdown: leave the task RUNNING with its lease (recovery reclaims it)
     except BudgetPause as pause:  # the router paused the workflow before calling: not a failure
         return await _budget_return(session_factory, claim, worker_id, pause.reason)
+    except ToolApprovalNeeded as need:  # a tool call needs a human: suspend, free the slot, no retry used
+        return await _suspend(session_factory, claim, worker_id, settings, need)
     except Exception as exc:
         error_type = classify_failure(exc)
         message = getattr(exc, "message", None) or str(exc) or type(exc).__name__
@@ -261,6 +264,35 @@ async def _save(
                            task.key, task.attempt_count, error_type, new_status, message)
         await session.commit()
         return True
+
+
+async def _suspend(session_factory: async_sessionmaker[AsyncSession], claim: Claim, worker_id: str,
+                   settings: Settings, need: ToolApprovalNeeded) -> bool:
+    """RUNNING -> AWAITING_APPROVAL in one guarded transaction: the attempt is closed as `suspended` with the
+    loop checkpoint, the lease is released (the worker slot is free while a human decides, which can take
+    hours) and max_attempts += 1 so no retry is used up. Waiting time counts toward no timeout."""
+    from app.models.workflow import Workflow
+    from app.services import approval_service
+    from app.services.notify import notify_approval
+
+    async with session_factory() as session:
+        task = await session.scalar(select(Task).where(Task.id == claim.task_id).with_for_update())
+        if (task is None or task.status != TaskStatus.RUNNING or task.lease_owner != worker_id
+                or task.attempt_count != claim.attempt):
+            await session.rollback()
+            return False
+        wf = await session.get(Workflow, task.workflow_id)
+        await close_attempt(session, task.id, outcome="suspended", error="waiting for a human decision on a tool call",
+                            loop_state=need.state.model_dump(mode="json"))
+        task.lease_owner = task.lease_expires_at = None
+        task.max_attempts += 1
+        approval = await approval_service.request_tool_approval(session, wf, task, need.tool_call_id, need.payload,
+                                                                settings)
+        await session.commit()
+        payload = {"approval_id": str(approval.id), **approval.request_payload}
+    notify_approval(settings.approval_webhook_url, payload)
+    logger.info("task.suspended key=%s tool_call=%s approval=%s", task.key, need.tool_call_id, approval.id)
+    return True
 
 
 async def _budget_return(

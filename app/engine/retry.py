@@ -112,6 +112,7 @@ async def close_attempt(
     latency_ms: int | None = None,
     provider: str | None = None,
     cost_usd: float | None = None,
+    loop_state: dict | None = None,
 ) -> None:
     """Finish the task's open (outcome=running) attempt row, if any."""
     attempt = await session.scalar(
@@ -132,6 +133,8 @@ async def close_attempt(
     attempt.latency_ms = latency_ms
     attempt.provider = provider
     attempt.cost_usd = cost_usd
+    if loop_state is not None:
+        attempt.loop_state = loop_state
 
 
 async def reclaim_lost_task(

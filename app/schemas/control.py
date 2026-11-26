@@ -39,13 +39,18 @@ class ApproveRequest(BaseModel):
     comment: str | None = Field(default=None, max_length=2000)
     input_overrides: dict[str, Any] | None = Field(
         default=None, description="Shallow-merged into the task input before it runs.")
+    arguments_overrides: dict[str, Any] | None = Field(
+        default=None, description="Tool-call approvals: the arguments to execute (validated against the tool).")
+    allow_recipient_override: bool = Field(
+        default=False, description="Tool-call approvals: allow recipients outside the email allowlist.")
 
 
 class RejectRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     actor: str = Field(min_length=1, max_length=255)
     reason: str = Field(min_length=1, max_length=2000)
-    on_reject: Literal["fail_workflow", "skip_task"] = "fail_workflow"
+    # Task approvals: fail_workflow | skip_task. Tool-call approvals: inform_agent | fail_task.
+    on_reject: Literal["fail_workflow", "skip_task", "inform_agent", "fail_task"] | None = None
 
 
 class ApprovalRead(BaseModel):
@@ -63,3 +68,5 @@ class ApprovalRead(BaseModel):
     request_payload: dict[str, Any]
     input_overrides: dict[str, Any] | None
     on_reject: str | None
+    kind: str = "task"
+    tool_call_id: uuid.UUID | None = None

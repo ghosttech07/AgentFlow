@@ -263,7 +263,8 @@ async def claim_tasks(
                 Workflow.status == WorkflowStatus.RUNNING,
                 # Claim-time double check: never trust the task status alone for gated tasks.
                 or_(Task.requires_approval.is_(False),
-                    exists().where(Approval.task_id == Task.id, Approval.status == "approved")),
+                    exists().where(Approval.task_id == Task.id, Approval.status == "approved",
+                                   Approval.kind == "task")),
             )
             .order_by(Workflow.started_at, Task.created_at, Task.key)
             .limit(limit)

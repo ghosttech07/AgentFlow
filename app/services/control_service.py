@@ -134,6 +134,14 @@ async def cancel(
     )).all()
     for a in approvals:
         a.status, a.decided_at, a.decided_by = "cancelled", utcnow(), actor
+    if approvals:  # Part 9: a tool call waiting for a human is denied (it never runs)
+        from sqlalchemy import update as sa_update
+
+        from app.models.tool_call import ToolCall
+
+        await session.execute(sa_update(ToolCall).where(
+            ToolCall.workflow_id == workflow_id, ToolCall.status == "awaiting_approval").values(
+            status="denied", error=f"cancelled by {actor}", finished_at=utcnow()))
 
     wf.run_requested = False  # a cancelled workflow is never picked up or planned again
     wf.error = f"cancelled by {actor}: {reason or 'no reason given'}"

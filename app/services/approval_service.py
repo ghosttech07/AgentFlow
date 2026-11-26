@@ -25,7 +25,7 @@ from sqlalchemy.orm import selectinload
 from app.agents.registry import sensitive_agent_types
 from app.config import Settings
 from app.core.enums import TaskStatus, WorkflowStatus
-from app.core.errors import ConflictError, NotFoundError
+from app.core.errors import ConflictError, NotFoundError, ValidationFailedError
 from app.core.events import EventType
 from app.core.state_machine import transition_task, transition_workflow
 from app.db.base import utcnow
@@ -63,7 +63,8 @@ def build_request_payload(wf: Workflow, task: Task) -> dict[str, Any]:
 
 async def approved_task_ids(session: AsyncSession, workflow_id: uuid.UUID) -> set[uuid.UUID]:
     rows = await session.scalars(
-        select(Approval.task_id).where(Approval.workflow_id == workflow_id, Approval.status == "approved")
+        select(Approval.task_id).where(Approval.workflow_id == workflow_id, Approval.status == "approved",
+                                       Approval.kind == "task")
     )
     return set(rows.all())
 
@@ -87,6 +88,47 @@ async def request_approval(session: AsyncSession, wf: Workflow, task: Task, sett
     return approval
 
 
+async def request_tool_approval(session: AsyncSession, wf: Workflow, task: Task, tool_call_id: uuid.UUID,
+                                payload: dict[str, Any], settings: Settings) -> Approval:
+    """RUNNING task suspended on one proposed tool call -> AWAITING_APPROVAL + a pending kind=tool_call approval."""
+    from app.models.tool_call import ToolCall
+
+    now = utcnow()
+    hours = settings.approval_timeout_hours
+    approval = Approval(
+        id=uuid.uuid4(), workflow_id=wf.id, task_id=task.id, status="pending", requested_at=now, kind="tool_call",
+        tool_call_id=tool_call_id, expires_at=now + timedelta(hours=hours) if hours > 0 else None,
+        request_payload={**payload, "workflow_goal": wf.goal, "task_key": task.key, "task_name": task.name,
+                         "agent_type": task.agent_type},
+    )
+    session.add(approval)
+    await session.flush()
+    call = await session.get(ToolCall, tool_call_id)
+    if call is not None:
+        call.approval_id = approval.id
+    await transition_task(
+        session, task, TaskStatus.AWAITING_APPROVAL, event_type=EventType.APPROVAL_REQUESTED, reason="tool_call",
+        extra={"approval_id": str(approval.id), "kind": "tool_call", "tool": payload.get("tool"),
+               "tainted": payload.get("tainted", False),
+               "expires_at": approval.expires_at.isoformat() if approval.expires_at else None},
+    )
+    logger.info("approval.requested workflow=%s task=%s approval=%s tool=%s", wf.id, task.key, approval.id,
+                payload.get("tool"))
+    return approval
+
+
+async def _set_tool_call(session: AsyncSession, approval: Approval, status: str, **values: Any) -> None:
+    from app.models.tool_call import ToolCall
+
+    if approval.tool_call_id is None:
+        return
+    call = await session.get(ToolCall, approval.tool_call_id, with_for_update=True)
+    if call is not None and call.status == "awaiting_approval":
+        call.status = status
+        for k, v in values.items():
+            setattr(call, k, v)
+
+
 async def expire_due(session: AsyncSession, wf: Workflow, tasks: list[Task]) -> int:
     """Pending approvals past expires_at -> expired; their task FAILED (approval_expired)."""
     rows = (
@@ -99,6 +141,7 @@ async def expire_due(session: AsyncSession, wf: Workflow, tasks: list[Task]) -> 
     by_id = {t.id: t for t in tasks}
     for a in rows:
         a.status, a.decided_at = "expired", utcnow()
+        await _set_tool_call(session, a, "denied", error="approval expired")
         task = by_id[a.task_id]
         task.error_type = "approval_expired"
         task.error = f"Approval {a.id} expired at {a.expires_at.isoformat()} without a decision"
@@ -162,17 +205,24 @@ async def _lock_pending(session: AsyncSession, approval_id: uuid.UUID) -> tuple[
 
 async def approve(
     session: AsyncSession, approval_id: uuid.UUID, *, actor: str, comment: str | None,
-    input_overrides: dict[str, Any] | None,
+    input_overrides: dict[str, Any] | None, arguments_overrides: dict[str, Any] | None = None,
+    allow_recipient_override: bool = False,
 ) -> Approval:
     approval, wf, task = await _lock_pending(session, approval_id)
     changes: dict[str, Any] = {}
-    if input_overrides:
+    if approval.kind == "tool_call":
+        changes = await _approve_tool_call(session, approval, arguments_overrides, allow_recipient_override)
+    elif input_overrides:
         old = task.input or {}
         changes = {k: {"from": old.get(k), "to": v} for k, v in input_overrides.items() if old.get(k) != v}
         task.input = {**old, **input_overrides}  # shallow merge; reassign so the JSONB change is saved
     approval.status, approval.decided_at, approval.decided_by = "approved", utcnow(), actor
-    approval.comment, approval.input_overrides = comment, input_overrides or None
-    extra = {"approval_id": str(approval.id), "actor": actor, "comment": comment, "input_changes": changes}
+    if approval.kind != "tool_call":
+        approval.comment, approval.input_overrides = comment, input_overrides or None
+    else:
+        approval.comment = comment
+    extra = {"approval_id": str(approval.id), "actor": actor, "comment": comment, "input_changes": changes,
+             "kind": approval.kind}
     if task.status == TaskStatus.AWAITING_APPROVAL:
         await transition_task(session, task, TaskStatus.READY, event_type=EventType.APPROVAL_APPROVED,
                               extra=extra)
@@ -184,14 +234,76 @@ async def approve(
     return approval
 
 
+async def _approve_tool_call(session: AsyncSession, approval: Approval, overrides: dict[str, Any] | None,
+                             allow_recipient_override: bool) -> dict[str, Any]:
+    """Validate the (possibly edited) arguments against the tool's schema; the journal row gets the final
+    arguments and their idempotency key (the key is computed on what actually executes)."""
+    import app.tools.catalog  # noqa: F401
+    from pydantic import ValidationError
+
+    from app.models.tool_call import ToolCall
+    from app.tools import journal
+    from app.tools.registry import get_tool
+
+    call = await session.get(ToolCall, approval.tool_call_id, with_for_update=True) if approval.tool_call_id else None
+    if call is None:
+        await session.rollback()
+        raise ConflictError("The tool call for this approval no longer exists")
+    original = dict(call.arguments or {})
+    final_args = {**original, **(overrides or {})} if overrides is not None else original
+    try:
+        validated = get_tool(call.tool).input_model.model_validate(final_args).model_dump(mode="json")
+    except ValidationError as exc:
+        tool_name = call.tool
+        problems = "; ".join(f"{'.'.join(str(p) for p in e['loc']) or '<root>'}: {e['msg']}" for e in exc.errors()[:6])
+        await session.rollback()
+        raise ValidationFailedError(f"The edited arguments are not valid for {tool_name}: {problems}") from exc
+    changes = {k: {"from": original.get(k), "to": v} for k, v in validated.items() if original.get(k) != v}
+    if changes:
+        call.proposed_arguments = original
+        call.arguments = validated
+        call.args_hash = journal.args_hash(validated)
+        call.idempotency_key = journal.idempotency_key(call.workflow_id, approval.request_payload.get("task_key", ""),
+                                                       call.tool, call.args_hash)
+    call.status = "approved"
+    approval.input_overrides = {"arguments": validated, "flags": {"allow_recipient_override": allow_recipient_override}}
+    return changes
+
+
+async def default_on_reject(session: AsyncSession, approval_id: uuid.UUID) -> str:
+    """Task approvals default to fail_workflow; tool calls to the tool's tools.yaml on_reject."""
+    approval = await get_approval(session, approval_id)
+    if approval.kind != "tool_call":
+        return "fail_workflow"
+    from app.tools import config as tools_config
+
+    cfg = tools_config.get_tools_config()
+    entry = cfg.entry(approval.request_payload.get("tool", "")) if cfg else None
+    return entry.on_reject if entry else "inform_agent"
+
+
 async def reject(
     session: AsyncSession, approval_id: uuid.UUID, *, actor: str, reason: str, on_reject: str
 ) -> Approval:
     approval, wf, task = await _lock_pending(session, approval_id)
+    if approval.kind == "tool_call" and on_reject not in ("inform_agent", "fail_task"):
+        await session.rollback()
+        raise ValidationFailedError("A tool-call approval is rejected with on_reject inform_agent or fail_task")
+    if approval.kind != "tool_call" and on_reject not in ("fail_workflow", "skip_task"):
+        await session.rollback()
+        raise ValidationFailedError("A task approval is rejected with on_reject fail_workflow or skip_task")
     approval.status, approval.decided_at, approval.decided_by = "rejected", utcnow(), actor
     approval.comment, approval.on_reject = reason, on_reject
     extra = {"approval_id": str(approval.id), "actor": actor, "reason": reason, "on_reject": on_reject}
-    if on_reject == "skip_task":
+    if approval.kind == "tool_call":
+        await _set_tool_call(session, approval, "denied", error=reason, finished_at=utcnow())
+    if on_reject == "inform_agent":
+        # The agent hears "denied by human: <reason>" on its next step and adapts (e.g. finishes without sending).
+        await transition_task(session, task, TaskStatus.READY, event_type=EventType.APPROVAL_REJECTED, extra=extra)
+        if wf.status == WorkflowStatus.AWAITING_APPROVAL:
+            await transition_workflow(session, wf, WorkflowStatus.RUNNING, reason=f"tool call denied by {actor}")
+        logger.info("approval.rejected task=%s inform_agent", task.key)
+    elif on_reject == "skip_task":
         tasks = (await session.scalars(
             select(Task).where(Task.workflow_id == wf.id).options(selectinload(Task.dependencies))
             .with_for_update()
