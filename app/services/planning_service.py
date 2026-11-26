@@ -24,8 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.llm.context import CallContext, use_context
 from app.agents import AgentInput, create_agent
-from app.agents.planner import Plan
-from app.agents.registry import task_agent_types
+from app.agents.planner import Plan, plannable_agent_types
 from app.config import get_settings
 from app.core.dag import PlanValidationError, execution_levels, to_mermaid, validate_plan
 from app.core.enums import WorkflowStatus
@@ -107,7 +106,7 @@ async def plan(
         for k in totals:
             totals[k] += getattr(result, k)
         candidate = Plan.model_validate(result.output)
-        errors = validate_plan(candidate.tasks, task_agent_types(), max_tasks)
+        errors = validate_plan(candidate.tasks, plannable_agent_types(), max_tasks)
         logger.info("plan.attempt attempt=%d/%d tasks=%d errors=%d",
                     attempt, max_attempts, len(candidate.tasks), len(errors))
         if not errors:

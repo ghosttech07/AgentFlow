@@ -4,6 +4,7 @@ import pytest
 
 from app.agents import AgentInput, create_agent
 from app.agents.analyst import AnalysisOutput
+from app.agents.communicator import CommunicatorOutput
 from app.agents.planner import Plan
 from app.agents.prompts import TRUNCATION_MARKER, build_task_prompt, fair_truncate
 from app.agents.researcher import ResearchOutput
@@ -30,6 +31,7 @@ INPUT = AgentInput(
         ("analyst", AnalysisOutput),
         ("writer", WritingOutput),
         ("reviewer", ReviewOutput),
+        ("communicator", CommunicatorOutput),
         ("planner", Plan),
     ],
 )

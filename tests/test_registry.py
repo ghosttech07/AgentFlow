@@ -20,9 +20,9 @@ def clean_registry() -> Iterator[None]:
 
 
 def test_builtin_agents_registered() -> None:
-    assert registry.agent_types() == ["analyst", "planner", "publisher", "researcher", "reviewer", "writer"]
+    assert registry.agent_types() == ["analyst", "communicator", "planner", "publisher", "researcher", "reviewer", "writer"]
     # The planner exists but can never be assigned to a workflow task.
-    assert registry.task_agent_types() == ["analyst", "publisher", "researcher", "reviewer", "writer"]
+    assert registry.task_agent_types() == ["analyst", "communicator", "publisher", "researcher", "reviewer", "writer"]
     assert registry.sensitive_agent_types() == ["publisher"]
 
 

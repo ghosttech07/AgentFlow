@@ -54,13 +54,21 @@
 #   "gemini:gemini-3.5-flash": {requests_per_day: 20, timezone: America/Los_Angeles}
 
 # ---------------------------------------------------------------------------------------------
-# Recommended for THIS machine (Gemini free key + local Ollama) - active profile is in
-# config/models.yaml if you created it: Gemini plans (quality), the fast lite model works, Ollama
-# catches overloads and exhausted quota for $0.
+# Recommended for THIS machine (Gemini free key + local Ollama), updated by the Part 9 local model check
+# (scripts/local_model_check.py, 2026-11-26):
+#   llama3.2:3b  never called a tool in 15 runs (answers straight away) -> fallback only, never first for tool roles
+#   qwen3:4b     uses tools but needs 110-170 s per run and timed out twice -> too slow
+#   qwen3.5:4b   researcher (search + read) and analyst (SQL + calculator) worked with 0 invalid calls, 35-120 s
+#                (only 1 run per role so far) -> a free first choice for research/analysis
+# Gemini keeps the roles where quality or safety matters most: planning, writing, the communicator (it sends).
 # ---------------------------------------------------------------------------------------------
 routes:
-  default: ["gemini:gemini-3.5-flash-lite", "gemini:gemini-3.1-flash-lite", "ollama:llama3.2:3b"]
-  planner: ["gemini:gemini-3.5-flash", "gemini:gemini-3.5-flash-lite", "ollama:llama3.2:3b"]
-  ask:     ["gemini:gemini-3.5-flash-lite", "ollama:llama3.2:3b"]
+  default:      ["gemini:gemini-3.5-flash-lite", "gemini:gemini-3.1-flash-lite", "ollama:qwen3.5:4b"]
+  planner:      ["gemini:gemini-3.5-flash", "gemini:gemini-3.5-flash-lite", "ollama:qwen3.5:4b"]
+  researcher:   ["ollama:qwen3.5:4b", "gemini:gemini-3.5-flash-lite"]
+  analyst:      ["ollama:qwen3.5:4b", "gemini:gemini-3.5-flash-lite"]
+  writer:       ["gemini:gemini-3.5-flash-lite", "gemini:gemini-3.1-flash-lite", "ollama:qwen3.5:4b"]
+  communicator: ["gemini:gemini-3.5-flash-lite", "gemini:gemini-3.1-flash-lite"]
+  ask:          ["gemini:gemini-3.5-flash-lite", "ollama:llama3.2:3b"]
 quotas:
   "gemini:gemini-3.5-flash": {requests_per_day: 20, timezone: America/Los_Angeles}

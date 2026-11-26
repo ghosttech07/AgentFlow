@@ -133,4 +133,6 @@ async def guarded_request(
                                        body=bytes(body), headers=dict(resp.headers))
             finally:
                 await resp.aclose()
+    if max_redirects == 0:
+        raise ToolError("the server answered with a redirect, which this tool does not follow; call the final URL")
     raise ToolError(f"too many redirects (more than {max_redirects})")

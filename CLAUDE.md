@@ -27,7 +27,7 @@ Positioning: a self-hosted engine for TRUSTWORTHY AI workflows. AI does the work
 reliability, cost limits and safety; humans approve under policy; every step is provable.
 8. [x] **Multi-provider AI + cost control**: Gemini, Claude, OpenAI, Ollama; cross-provider
    fallback; cost tracking; budgets; persisted quotas (DONE)
-9. [ ] **Tools + safe actions**: tool registry (web, HTTP APIs, DB, files, email), side-effect rules, sandboxing
+9. [x] **Tools + safe actions**: tool registry (web, HTTP APIs, DB, files, email), side-effect rules, sandboxing (DONE)
 10. [ ] **Adaptive workflows**: feedback loops, conditional branches, bounded re-planning, memory
 11. [ ] **Policy engine + users/roles**: policy-as-code, RBAC, multi-approver
 12. [ ] **Trust layer**: tamper-evident hash-chained audit, reproducibility, PII redaction, compliance export
@@ -75,6 +75,15 @@ Same rule: build one part, test it, then wait for the next part's prompt.
   live: Ollama structured call + full local workflow PASS, one Gemini call PASS, free-dev workflow
   COMPLETED at $0; budget/crash/controls demos PASS; whole-branch review fixes (7 Important) applied with
   regression tests. Next: Part 9 (tools + safe actions).
+- Part 9 done (2026-11-26): 582 default tests (full run 581 passed + 1 timing-flaky retry test, fixed: tolerance
+  1 s -> 5 s); engine/tool suites 3x (see logs/p9_final_verify.txt); tools_demo 12/12 PASS; crash/controls/budget
+  demos PASS; live Gemini researcher tool loop PASS (3 calls, $0.004); final opus review: 1 Critical + 6 Important
+  fixed with regression tests (tests/test_p9_review_fixes.py), 8 minors deferred (ledger). Also on this branch:
+  dashboard redesign (answer engine), Quick Ask history, Part 7 audit (docs/superpowers/specs/part7-audit.md).
+- Local model check (scripts/local_model_check.py): llama3.2:3b never calls tools (0/15); qwen3:4b uses tools but
+  110-170 s/run + timeouts; qwen3.5:4b researcher + analyst used tools correctly, 0 invalid calls (1 run/role).
+  Recommended routing in config/models.example.yaml: research/analysis on ollama:qwen3.5:4b, planner/writer/
+  communicator on Gemini. Next: Part 10 (adaptive workflows). Open for the user: Docker "full" profile, CI + ruff.
 - Docker Desktop on this machine: if `docker` is not on PATH in a fresh shell, it lives at
   `C:\Users\DELL\AppData\Local\Programs\DockerDesktop\resources\bin\docker.exe`.
 
@@ -121,6 +130,10 @@ scripts/run_workflow.py Demo: run a goal end to end against the running server, 
 scripts/crash_demo.py   Part 5 demo: crash the server mid-task, restart, verify recovery
 scripts/controls_demo.py Part 6 demo: pause/resume, approve, reject, cancel (fake LLM)
 scripts/budget_demo.py  Part 8 demo: budget pause -> PATCH -> resume -> COMPLETED (fake LLM)
+scripts/tools_demo.py   Part 9 demo: tools, approval with edits, crash after email (exactly one), injection blocked
+scripts/demo.py         runs every demo and prints one PASS/FAIL table
+scripts/setup_sample_data.py  read-only sample DB for sql_query (idempotent)
+scripts/local_model_check.py  Ollama models vs the tool action protocol (success / tool use / valid steps)
 scripts/list_provider_models.py  provider:model entries available to your keys / local Ollama
 config/                 models.example.yaml (routes + quotas), pricing.yaml (USD per 1M tokens)
 docs/ARCHITECTURE.md    architecture diagram incl. the router
@@ -621,6 +634,104 @@ COMPLETED at 6 calls, $0. crash_demo --fake and controls_demo still PASS.
 `provider_usage`, `workflows.budget`, `task_attempts.provider|cost_usd`. Live markers: `live_gemini`,
 `live_anthropic`, `live_openai`, `live_ollama` (all also `live`, excluded by default).
 
+## Tools + safe actions (Part 9)
+**The LLM proposes a tool call; code validates, authorizes, executes, journals it and decides whether a human
+must approve. No `config/tools.yaml` = no agent has tools = Part 8 behaviour exactly.**
+
+### Framework (`app/tools/`)
+- `base.py`: `Tool` ABC (name, description, input_model, output_model, side_effect `none|internal_write|
+  external_read|external_write` (`side_effect_for(args)`: http_request GET = read), untrusted, idempotent,
+  supports_idempotency_key / `replay_safe(options)`, timeout_seconds, `available()` = disabled reason),
+  `ToolContext` (workflow/task/attempt, sandbox, idempotency_key, options = the tools.yaml entry, credentials,
+  `approval_flags` set ONLY by an approver, e.g. allow_recipient_override), `ToolError(transient=)`.
+- `registry.py` + `catalog.py` (imports every tool module), `config.py`: tools.yaml (`TOOLS_CONFIG_PATH`)
+  `{tools: {name: {enabled, approval: never|always|external_write_only, on_reject: inform_agent|fail_task,
+  ...options}}, agents: {agent: [tools]}, credentials: {name: {env, header, format}}}` validated at startup
+  (`ToolConfigError` stops the app). `effective_tools` = agent `allowed_tools` ∩ config ∩ enabled ∩ available.
+  `approval_mode` default: always for external_write. `CredentialResolver`: the agent passes a NAME; secrets
+  come from env and are redacted (`redact.py`) from journal rows, results and logs. `GET /tools`.
+- Tools: web_search (backend chain, default [tavily, ddgs]; gemini_grounding opt-in; fake), web_fetch
+  (trafilatura -> BeautifulSoup; fake backend with canned pages incl. `https://evil.example/ev-report`),
+  http_request (domain allowlist, named credentials), sql_query (sqlglot: one SELECT, write/admin nodes and
+  file/admin functions rejected; READ ONLY transaction, statement_timeout, role `agentflow_reader`, row
+  limit 200; refuses AgentFlow's own DB), calculator (AST whitelist incl. pct_change), file_write/read/list
+  (sandbox `outputs/workspaces/<wf>/`, no traversal/absolute/symlink), send_email (outbox `<key>.eml`
+  deterministic | smtp; recipient allowlist; smtp is NOT replay-safe), webhook_post (allowlisted URL prefix,
+  `Idempotency-Key` header).
+- `netguard.py` SSRF guard (web_fetch, http_request, webhook): http/https only; resolve DNS, EVERY address
+  must be global (blocks private, loopback, link-local/169.254.169.254, multicast, reserved, IPv4-mapped
+  IPv6, fc00::/7); connects to the vetted IP (Host header + SNI keep the name); every redirect hop re-checked
+  (max 5); 2 MB cap while streaming; content-type allowlist. Tests patch `netguard.resolve` and
+  `netguard.transport_factory`.
+- Sample data: `scripts/setup_sample_data.py` (idempotent; also run by the test session fixture) creates DB
+  `agentflow_sample`, table `ev_sales` (FAKE numbers, labelled) and the read-only role (SAMPLE_DATA_URL).
+
+### Tool loop (`app/tools/loop.py`, `prompting.py`)
+- `BaseAgent.run`: no effective tools -> the classic single call; else `run_tool_loop`. The worker builds a
+  `ToolRuntime` (running attempt number, upstream taint, resume info) and uses `TOOL_LOOP_TIMEOUT_SECONDS`
+  (900) instead of TASK_TIMEOUT for tool agents.
+- Step model `ToolStep<Output>` = {action tool_call|final, tool, arguments (free object), reason, output};
+  every step goes through the router (cost/quota/budget/fallback). Code validates tool + arguments; an
+  invalid call is a `rejected_invalid` journal row returned to the model as TOOL ERROR (no crash).
+  `MAX_TOOL_STEPS` (8) -> one forced "final now" call -> still no final = LLMOutputError.
+- Budget `max_tool_calls` (executed calls; reuses don't count) -> BudgetPause. A tool workflow with no explicit
+  budget that hits DEFAULT_MAX_LLM_CALLS pauses with "budget_exceeded: default max_llm_calls=N reached (tool
+  workflow); raise the budget with PATCH /workflows/{id}/budget and resume".
+
+### Journal + replay (`journal.py`, table `tool_calls`, migration 0006)
+- A row before execution (running), updated after, short transactions. `idempotency_key` = sha256(workflow|
+  task_key|tool|args_hash) on the arguments that EXECUTE (after approval edits).
+- Resume (user decision): a new attempt after `worker_lost | interrupted | budget_paused | suspended` rebuilds
+  the transcript from the previous attempts' rows and asks the model only for the NEXT step.
+- Decisions: write succeeded -> reuse (any age); read succeeded -> reuse within TOOL_RESULT_REUSE_SECONDS
+  (3600); running/unknown write -> `unknown_outcome`, re-execute with the same key if replay-safe, else a
+  human approval with "may have sent this". `GET /workflows/{id}/tasks/{key}/tool-calls`.
+
+### Tool-call approvals
+- Needed when approval mode says so, or (code-enforced) the attempt is tainted and the call is
+  external_write, or an unknown smtp outcome. `ToolApprovalNeeded` -> worker `_suspend`: attempt `suspended`
+  with `loop_state`, lease cleared, max_attempts += 1, task RUNNING -> AWAITING_APPROVAL (new transition),
+  approval `kind=tool_call` + `tool_call_id`; the slot is free; waiting time counts toward no timeout.
+- Approve: `arguments_overrides` validated against the tool (422, stays pending), `allow_recipient_override`;
+  the row gets final args + key (`proposed_arguments` keeps the original). Reject: `inform_agent` (task READY,
+  the model sees "denied by human: <reason>") | `fail_task`; task kinds keep fail_workflow | skip_task; wrong
+  kind -> 422; body on_reject optional (defaults per kind / tools.yaml). Expiry, cancel -> row `denied`.
+  The claim-time approval check only counts `kind=task` rows.
+
+### Taint, injection, sources
+- Results of untrusted tools are wrapped `<untrusted_tool_result source=...>` + UNTRUSTED_RULE in every tool
+  agent's system prompt. Reading one taints the attempt; `tasks.tainted` is set on success and also when any
+  direct dependency is tainted (flows through tasks without tools).
+- `injection.py` heuristics flag (never block): journal row, event `tool.injection_suspected`, approval payload.
+- Researcher (tool mode): `postprocess_tools` keeps only cited URLs returned by web_search or fetched in this
+  task (`sources.normalize_url`), moves the rest to `removed_unverified_sources`, lowers confidence one level,
+  event `task.sources_verified`.
+
+### Agents
+researcher [web_search, web_fetch], analyst [sql_query, calculator], writer [file_write], communicator
+[send_email, webhook_post] (`requires_tools`: offered to the planner only when its tools are configured;
+deliveries rebuilt from the journal). Planner catalog lists tools; rule 12 (communicator only when the goal
+asks to send/email/notify, last). Demo mode: `FakeLLMClient.tool_policy` = `demo_fake.tool_step`; an
+"email/send/notify" goal plans research ‖ analysis -> summary -> email.
+
+### Visibility + demo
+Timeline summary: tool_calls_by_tool, tool_calls_reused, tool_approvals, sources_verified/removed,
+injection_flags; per-attempt `tool_calls` markers; `/metrics/summary.tools` per tool. Dashboard: tool calls
+under each step (reused / untrusted input / suspicious page badges), tool approval card with an editable JSON
+of exactly what will be sent. Chaos mode `crash_after_tool:<tool>` (dev only). `python scripts/tools_demo.py`
+(fake; `--live` for real providers). docs/DEMO_GUIDE.md has the interview Q&A.
+
+### Config
+`TOOLS_CONFIG_PATH` (config/tools.yaml), `MAX_TOOL_STEPS` (8), `MAX_TOOL_OUTPUT_CHARS` (4000),
+`TOOL_LOOP_TIMEOUT_SECONDS` (900), `TOOL_RESULT_REUSE_SECONDS` (3600), `WORKSPACES_DIR`, `OUTBOX_DIR`,
+`SAMPLE_DATA_URL`, `SAMPLE_DB_READER_PASSWORD`. Migrations 0006 (tool_calls, approvals.kind/tool_call_id,
+task_attempts.loop_state, tasks.tainted) and 0007 (asks: Quick Ask history).
+
+### Dashboard redesign (user request, 2026-11-26)
+Clean answer engine (DESIGN.md): one question box with Quick answer / Deep research, mic placeholder
+("not available yet"), server-side history sidebar (`GET /history`, `GET /asks/{id}`; Quick Ask answers are
+saved), technical status removed from the screen (cost/limits/activity in a closed Details section).
+
 ## Coding conventions
 - **Async everywhere** (routes, services, DB access). No sync DB calls in app code.
 - **Thin routes**: parse/validate → call a service → convert to schema. No logic in routes.
@@ -652,6 +763,9 @@ python scripts/run_workflow.py "<goal>"    # demo: run a goal end to end (server
 python scripts/crash_demo.py --fake           # Part 5: crash + restart + recovery (fake LLM)
 python scripts/controls_demo.py             # Part 6: pause/resume, approve, reject, cancel (fake LLM)
 python scripts/budget_demo.py               # Part 8: budget pause + PATCH + resume (fake LLM)
+python scripts/setup_sample_data.py         # Part 9: sample database + read-only role for sql_query
+python scripts/tools_demo.py                # Part 9: tools + approvals + crash after email + injection (fake)
+python scripts/demo.py                      # every demo, one PASS/FAIL table
 python scripts/list_provider_models.py      # Part 8: models your keys / local Ollama offer
 pytest -m live_ollama -s                    # Part 8: free local-model live tests
 ```

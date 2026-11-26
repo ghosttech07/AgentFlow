@@ -26,6 +26,7 @@ class WriterAgent(BaseAgent):
     agent_type = "writer"
     description = "Writes Markdown content (reports, articles, summaries) from previous task results."
     output_model = WritingOutput
+    allowed_tools = ("file_write",)  # Part 9: save the document in the workflow workspace
     system_prompt = """You are a professional writer.
 Your job: turn the results from previous tasks into clear, well-structured Markdown.
 Rules:

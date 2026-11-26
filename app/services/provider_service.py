@@ -74,4 +74,18 @@ async def metrics_summary(session: AsyncSession) -> dict[str, Any]:
         "fallbacks": totals[6],
         "by_provider": {p: _stats(int(a[0]), int(a[1]), a[2], a[3], int(a[4])) for p, a in sorted(agg.items())},
         "by_entry": by_entry,
+        "tools": await _tool_stats(session),
     }
+
+
+async def _tool_stats(session: AsyncSession) -> dict[str, Any]:
+    """Part 9: executed tool calls per tool (reuses excluded): calls, failures, average latency."""
+    from app.models.tool_call import ToolCall
+
+    rows = (await session.execute(
+        select(ToolCall.tool, func.count(), func.count().filter(ToolCall.status == "failed"),
+               func.avg(ToolCall.duration_ms))
+        .where(ToolCall.started_at.is_not(None), ToolCall.reused_from_id.is_(None))
+        .group_by(ToolCall.tool).order_by(ToolCall.tool))).all()
+    return {tool: {"calls": calls, "failures": failures,
+                   "avg_latency_ms": None if avg is None else int(avg)} for tool, calls, failures, avg in rows}

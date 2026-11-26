@@ -94,6 +94,8 @@ It ends by printing the timeline built from the database. Other demos:
 
 | Command | Shows |
 |---|---|
+| `python scripts/tools_demo.py` | **Safe actions.** Research (web tools) and the sample database run in parallel; an invented source is removed by code; the email waits for approval and is sent with an edited subject; the server is killed right after sending; after the restart there is still **exactly one** email. Then a prompt-injection page is flagged and its email to the attacker is blocked. |
+| `python scripts/demo.py` | Runs every demo below and prints one PASS/FAIL table. |
 | `python scripts/controls_demo.py` | Pause and resume; approve a publish step with an edited title (published exactly once); reject and skip a step; cancel while tasks run. |
 | `python scripts/budget_demo.py` | A workflow hits `max_llm_calls`, pauses, the budget is raised, it resumes and completes. |
 | `python scripts/run_workflow.py "<goal>"` | Runs any goal against a running server with a live progress table. |
@@ -142,6 +144,33 @@ More detail, including the state diagrams for workflows and tasks: [docs/ARCHITE
 | **Structured JSON "action protocol" for tools** instead of each provider's native function calling | One loop works the same on Gemini, Claude, OpenAI, Ollama and the fake model, and every call goes through the same router, budget and journal. | Slightly more prompt text; native function calling is listed as future work. |
 | **One process runs the API and the engine** | Easy to run and demo. | Scaling out the workers separately is Part 14. |
 
+## Tools and safe actions
+
+With `config/tools.yaml` (copy [config/tools.example.yaml](config/tools.example.yaml)) agents use tools; without
+it they behave exactly as before. The model **proposes** a tool call as structured JSON; **code** checks the
+tool is allowed for that agent, validates the arguments, decides whether a human must approve, runs it with a
+timeout, and journals it.
+
+| Agent | Tools |
+|---|---|
+| researcher | `web_search` (Tavily if you have a key, else free metasearch), `web_fetch` |
+| analyst | `sql_query` (read-only, external data only; a sample database with fake numbers is included), `calculator` |
+| writer | `file_write` (a private workspace per workflow) |
+| communicator | `send_email` (outbox file by default, or SMTP), `webhook_post` (e.g. Slack) |
+
+Safety, all enforced in code:
+- **Side-effect classes.** Every tool is `none`, `internal_write`, `external_read` or `external_write`; outside
+  writes need approval by default, and the approver sees (and can edit) exactly what will be sent.
+- **Crash-safe journal.** Each call is recorded before and after it runs with an idempotency key. After a crash
+  the agent resumes from the journal, so an email that went out is never sent again.
+- **Taint tracking.** Once a task has read web content, every outside action needs a human, even if the config
+  says "never"; this flows to downstream tasks. Suspicious text ("ignore previous instructions", hidden text)
+  is flagged on the approval card.
+- **Source verification.** The researcher can only cite pages it actually opened; anything else is removed.
+- **SSRF guard.** Fetches only reach public addresses (every redirect re-checked), with size and type limits.
+- **Read-only SQL.** One SELECT only (parsed), a read-only database role, a read-only transaction and a timeout.
+- **Secrets.** API credentials are referenced by name and never stored in the journal or logs.
+
 ## How failures are handled
 
 | Failure | What happens |
@@ -174,10 +203,15 @@ write, and duplicate side effects after a crash.
 ## Limitations and what's not done yet
 
 Honest status as of 2026-11-26:
-- **Part 9 (tools and safe actions) is in progress** on the `part9-tools` branch. Built and tested:
-  the tool framework, the 8 tools, the crash-safe journal, the tool loop and per-call approvals.
-  Still to do: taint propagation across tasks, prompt-injection flags, source verification, the new
-  communicator agent, dashboard views for tool calls, the tools demo and the docs.
+- **Small local models and tools.** Measured with `scripts/local_model_check.py`: `llama3.2:3b` never called a
+  tool (it answers straight away), `qwen3:4b` uses tools but is too slow (110-170 s per run, timeouts),
+  `qwen3.5:4b` researched and analysed correctly with tools (35-120 s; few runs so far). The recommended
+  routing in `config/models.example.yaml` keeps planning, writing and sending on Gemini.
+- **The prompt-injection detector is a heuristic.** It flags, it does not block; the real protection is that
+  tainted tasks cannot act outside without a human.
+- **OpenAI's strict structured-output mode may reject the free-form `arguments` object** of the tool protocol
+  (Gemini and Ollama accept it); not tested live (no OpenAI key).
+- **No code-execution tool** and no native function calling (both future work).
 - **No user accounts yet.** The history is shared by everyone using the server, and control actions
   are protected by one admin password (`ADMIN_API_KEY`). Users, roles and policies are Part 11.
 - **Free web search is best-effort.** Without a Tavily key the researcher uses free metasearch, which
@@ -190,7 +224,7 @@ Honest status as of 2026-11-26:
   `ENGINE_SINGLE_NODE=false`, and a load test is Part 14.
 - **No feedback loops or re-planning** yet (Part 10), and no code-execution tool.
 - **Voice input** is shown in the dashboard but not built yet.
-- **No CI pipeline** is set up on GitHub yet; tests run locally.
+- **No CI pipeline and no Docker image for the app** yet; tests run locally and the app runs with Python.
 
 ## Roadmap
 
@@ -198,7 +232,7 @@ Honest status as of 2026-11-26:
 |---|---|
 | 1-7: foundation, agents, planning, execution engine, reliability, human controls, observability | Done |
 | 8: multi-provider AI and cost control | Done |
-| 9: tools and safe actions (web, HTTP APIs, SQL, files, email, webhooks; crash-safe journal, approvals, taint tracking) | In progress |
+| 9: tools and safe actions (web, HTTP APIs, SQL, files, email, webhooks; crash-safe journal, approvals, taint tracking) | Done |
 | 10: adaptive workflows (feedback loops, conditional branches, bounded re-planning) | Planned |
 | 11: policy engine, users and roles, multiple approvers | Planned |
 | 12: tamper-evident audit trail, reproducibility, PII redaction | Planned |

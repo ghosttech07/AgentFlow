@@ -22,7 +22,7 @@ from app.tools.base import WRITE_EFFECTS
 from app.tools.redact import redact
 
 Decision = Literal["execute", "reuse", "unknown_reexecute", "unknown_needs_approval"]
-_PREVIOUS_STATUSES = ("succeeded", "running", "unknown_outcome")
+_PREVIOUS_STATUSES = ("succeeded", "running", "unknown_outcome")  # "superseded" rows were replaced: ignored
 
 
 def args_hash(args: dict[str, Any]) -> str:

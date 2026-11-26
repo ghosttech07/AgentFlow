@@ -48,6 +48,8 @@ class EventType(StrEnum):
     TASK_INTERRUPTED = "task.interrupted"
     TASK_CANCELLED = "task.cancelled"
     TASK_SKIPPED = "task.skipped"
+    TASK_SOURCES_VERIFIED = "task.sources_verified"  # Part 9: researcher citations checked by code
+    TOOL_INJECTION_SUSPECTED = "tool.injection_suspected"  # Part 9: suspicious text in an untrusted result
     APPROVAL_REQUESTED = "approval.requested"
     APPROVAL_APPROVED = "approval.approved"
     APPROVAL_REJECTED = "approval.rejected"

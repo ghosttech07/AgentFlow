@@ -29,7 +29,7 @@ from app.llm.errors import BudgetPause, LLMOutputError
 from app.models.approval import Approval
 from app.models.tool_call import ToolCall
 from app.tools import journal
-from app.tools.base import Tool, ToolContext, ToolError
+from app.tools.base import WRITE_EFFECTS, Tool, ToolContext, ToolError
 from app.tools.config import CredentialResolver, ToolsConfig, approval_mode
 from app.tools.prompting import FINAL_NOW, PROTOCOL, UNTRUSTED_RULE, StepView, steps_section, tools_section
 from app.tools.registry import get_tool
@@ -67,6 +67,9 @@ class ToolRuntime:
     attempt_number: int  # task_attempts.attempt_number of the running attempt
     tools: list[str]
     tainted_from: list[str] = field(default_factory=list)  # upstream tainted task keys
+    # What made the upstream tainted (URLs read, injection flags), so an approver of a later send sees it.
+    inherited_sources: list[str] = field(default_factory=list)
+    inherited_warnings: list[str] = field(default_factory=list)
     resume: ResumeInfo | None = None
 
 
@@ -100,10 +103,16 @@ class LoopReport:
     fallback_from: str | None = None
     route_position: int = 0
 
+    sources_verified: dict[str, Any] | None = None  # set by the researcher's code check
+    calls: list[dict[str, Any]] = field(default_factory=list)  # every step (tool, status, arguments, result, ...)
+
     def summary(self) -> dict[str, Any]:
-        return {"steps": self.steps, "tool_calls": self.tool_calls, "invalid_steps": self.invalid_steps,
-                "reused": self.reused, "tainted": self.tainted, "by_tool": self.by_tool,
-                "untrusted_sources": self.untrusted_sources[:20], "injection_warnings": self.injection_warnings}
+        out = {"steps": self.steps, "tool_calls": self.tool_calls, "invalid_steps": self.invalid_steps,
+               "reused": self.reused, "tainted": self.tainted, "by_tool": self.by_tool,
+               "untrusted_sources": self.untrusted_sources[:20], "injection_warnings": self.injection_warnings}
+        if self.sources_verified is not None:
+            out["sources_verified"] = self.sources_verified
+        return out
 
 
 def build_step_model(output_model: type[BaseModel], tool_names: list[str]) -> type[BaseModel]:
@@ -146,7 +155,9 @@ class ToolLoop:
         self.history: list[StepView] = []
         self.report = LoopReport()
         self.state = LoopState(tainted=bool(rt.tainted_from),
-                               untrusted_sources=[f"upstream task {k}" for k in rt.tainted_from])
+                               untrusted_sources=[*[f"upstream task {k}" for k in rt.tainted_from],
+                                                  *rt.inherited_sources],
+                               injection_warnings=list(rt.inherited_warnings))
         self.credentials = CredentialResolver(rt.config)
 
     # ------------------------------------------------------------------ helpers
@@ -198,8 +209,8 @@ class ToolLoop:
             self.state = resume.state.model_copy(deep=True)
         rows = await journal.transcript(self.sf, self.rt.task_id, resume.attempt_numbers)
         for row in rows:
-            if row.status in ("awaiting_approval", "approved", "running", "unknown_outcome", "proposed"):
-                continue  # handled below (pending / unknown calls)
+            if row.status in ("awaiting_approval", "approved", "running", "unknown_outcome", "proposed", "superseded"):
+                continue  # handled below (pending / unknown calls); superseded rows were replaced by a later row
             self._absorb(self._view(row))
         self.state.step_index = max([r.step_index + 1 for r in rows], default=0)
         # Calls whose outcome is open: the approved/denied pending call, or a call a dead attempt was running.
@@ -227,7 +238,9 @@ class ToolLoop:
     async def _settle_unknown(self, row: ToolCall) -> None:
         """A dead attempt was running this call: apply the unknown-outcome rules."""
         tool = self.tools.get(row.tool) or get_tool(row.tool)
-        await journal.mark_unknown(self.sf, row.id)
+        # Close it for good: the new row (re-run or human decision) replaces it, so it is never settled twice.
+        await journal.set_status(self.sf, row.id, "superseded", finished_at=utcnow(),
+                                 error="outcome unknown (its attempt ended while it ran); replaced by a new call")
         args = tool.input_model.model_validate(row.arguments or {})
         decision = journal.reuse_decision(ToolCall(status="unknown_outcome"), row.side_effect,
                                           tool.replay_safe(self._options(tool)), utcnow(), 0)
@@ -246,13 +259,24 @@ class ToolLoop:
                    flags: dict[str, Any] | None = None) -> StepView:
         start = time.monotonic()
         status, result, error = "succeeded", None, None
+        is_write = tool.side_effect_for(args) in WRITE_EFFECTS
         try:
             out = await asyncio.wait_for(tool.execute(args, self._ctx(tool, key, flags)), timeout=tool.timeout_seconds)
             result = out.model_dump(mode="json")
+        except asyncio.CancelledError:
+            # Cancel / immediate pause / lost lease while the tool ran: it may have happened. Journal that, then stop.
+            await asyncio.shield(journal.record_finish(
+                self.sf, call_id, status="unknown_outcome", duration_ms=int((time.monotonic() - start) * 1000),
+                error=f"{tool.name} was cancelled while running; outcome unknown"))
+            raise
         except ToolError as exc:
-            status, error = "failed", exc.message
+            # A write whose request may already have left (timeout, dropped connection) is not "failed": it may
+            # have happened. unknown_outcome makes a repeat go through the replay-safe / human rules.
+            status, error = ("unknown_outcome", f"outcome unknown: {exc.message}") if is_write and exc.transient \
+                else ("failed", exc.message)
         except TimeoutError:
-            status, error = "failed", f"{tool.name} timed out after {tool.timeout_seconds:g}s"
+            status, error = (("unknown_outcome", f"outcome unknown: {tool.name} timed out after {tool.timeout_seconds:g}s")
+                             if is_write else ("failed", f"{tool.name} timed out after {tool.timeout_seconds:g}s"))
         except (ValidationError, ValueError) as exc:
             status, error = "failed", f"{tool.name} failed: {str(exc)[:300]}"
         except Exception as exc:  # never crash the task on a tool bug; log it
@@ -260,12 +284,43 @@ class ToolLoop:
             status, error = "failed", f"{tool.name} failed unexpectedly: {type(exc).__name__}"
         duration = int((time.monotonic() - start) * 1000)
         result = self._truncate(result, tool)
+        warnings = await self._scan(tool, result, call_id) if status == "succeeded" else []
         await journal.record_finish(self.sf, call_id, status=status, result=result, error=error, duration_ms=duration,
-                                    secrets=self.credentials.secret_values())
+                                    secrets=self.credentials.secret_values(),
+                                    **({"injection_warnings": warnings} if warnings else {}))
         logger.info("tool.%s tool=%s task=%s step=%d ms=%d", status, tool.name, self.rt.task_key, step_index, duration)
+        if status == "succeeded" and self.rt.settings.app_env != "production":
+            from app.engine import chaos
+
+            await chaos.after_tool(self.sf, self.rt.workflow_id, self.rt.task_key, tool.name, self.rt.settings)
         return StepView(index=step_index, tool=tool.name, arguments=args.model_dump(mode="json"), status=status,
                         result=result, error=error, untrusted=tool.untrusted,
                         source=_source_label(tool.name, args.model_dump(mode="json")), call_id=call_id)
+
+    async def _scan(self, tool: Tool, result: dict[str, Any] | None, call_id: uuid.UUID) -> list[str]:
+        """Flag (never block) instruction-like text in untrusted results: journal row, event, approval payload."""
+        if not tool.untrusted or not result:
+            return []
+        from app.core.events import EventType, record_event
+        from app.tools.injection import scan
+
+        found = scan(result)
+        if not found:
+            return []
+        source = str(result.get("final_url") or result.get("url") or tool.name)
+        for name in found:
+            note = f"{name} ({source})"
+            if note not in self.state.injection_warnings:
+                self.state.injection_warnings.append(note)
+        async with self.sf() as s:
+            record_event(s, workflow_id=self.rt.workflow_id, task_id=self.rt.task_id,
+                         event_type=EventType.TOOL_INJECTION_SUSPECTED,
+                         payload={"task_key": self.rt.task_key, "tool": tool.name, "source": source,
+                                  "rules": found, "tool_call_id": str(call_id)})
+            await s.commit()
+        logger.warning("tool.injection_suspected task=%s tool=%s source=%s rules=%s", self.rt.task_key, tool.name,
+                       source, found)
+        return found
 
     def _truncate(self, result: dict[str, Any] | None, tool: Tool) -> dict[str, Any] | None:
         if result is None:
@@ -358,7 +413,8 @@ class ToolLoop:
             return
         warning = None
         if decision in ("unknown_reexecute", "unknown_needs_approval") and prev is not None:
-            await journal.mark_unknown(self.sf, prev.id)
+            await journal.set_status(self.sf, prev.id, "superseded", finished_at=utcnow(),
+                                     error="outcome unknown; replaced by a new call")
             warning = "A previous attempt may have sent this (its outcome is unknown)."
         if decision == "unknown_needs_approval" or self._needs_approval(tool, side):
             await self._suspend(tool, args, reason, step_index, key, warning=warning)
@@ -404,6 +460,8 @@ class ToolLoop:
                 self.report.tainted = self.state.tainted
                 self.report.untrusted_sources = list(self.state.untrusted_sources)
                 self.report.injection_warnings = list(self.state.injection_warnings)
+                self.report.calls = [{"tool": v.tool, "status": v.status, "arguments": v.arguments, "result": v.result,
+                                      "error": v.error, "call_id": v.call_id, "reused": v.reused} for v in self.history]
                 return step.output, self.report  # type: ignore[attr-defined]
             if forced:
                 raise LLMOutputError(f"{self.agent.agent_type} did not return a final answer after "

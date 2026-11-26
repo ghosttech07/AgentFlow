@@ -5,6 +5,7 @@ outcome can be de-duplicated by the receiver."""
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field
 
@@ -23,6 +24,16 @@ class WebhookResult(BaseModel):
     response_text: str
 
 
+def url_allowed(url: str, entry: str) -> bool:
+    """Same scheme and host (exact), and the path starts with the entry's path. A plain string prefix would let
+    "https://hooks.slack.com" match "https://hooks.slack.com.evil.example"."""
+    u, e = urlsplit(url), urlsplit(entry)
+    if (u.scheme, (u.hostname or "").lower(), u.port) != (e.scheme, (e.hostname or "").lower(), e.port):
+        return False
+    base = e.path or "/"
+    return (u.path or "/").startswith(base if base.endswith("/") else base + "/") or (u.path or "/") == base
+
+
 @register_tool
 class WebhookTool(Tool):
     name = "webhook_post"
@@ -35,7 +46,7 @@ class WebhookTool(Tool):
 
     async def execute(self, args: WebhookArgs, ctx: ToolContext) -> WebhookResult:
         allowed = list(ctx.options.get("allowed_urls", []))
-        if not any(args.url.startswith(prefix) for prefix in allowed):
+        if not any(url_allowed(args.url, entry) for entry in allowed):
             raise ToolError(f"URL is not in the webhook allowlist ({', '.join(allowed) or 'empty'})")
         resp = await netguard.guarded_request(
             args.url, method="POST", json_body=args.payload, allowed_types=None, max_redirects=0,
