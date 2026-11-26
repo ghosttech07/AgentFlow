@@ -123,3 +123,16 @@ Live: Ollama qwen3.5:4b + <= 3 Gemini calls showing a real review -> rewrite. Do
 features, condition syntax, loops, replanning, memory, exfil protection), ARCHITECTURE (dynamic expansion vs cycles,
 replan sequence, memory flow, state diagrams), DEMO_GUIDE (4 new Q&A). Final: default suite green; engine/adaptive
 suites 5x with JUnit; CI green; whole-branch review (opus) + fix pass; merge to main after the user's OK.
+
+## User additions after plan review (binding, 2026-11-27)
+1. Automatic re-plan after a failure is opt-in (planner-made plans); human POST /workflows/{id}/replan and the
+   plan-patch while PAUSED work on ALL workflows, including manually created ones (test). -> Task 10
+2. Loop body task keys > 46 chars: validator error "loop body task key must be <= 46 characters so __vN fits";
+   test that the planner repair loop fixes it. -> Task 7
+3. Task-less approvals (plan_patch): expiry, cancelled with the workflow, shown in the dashboard approvals view,
+   decisions recorded in events with the actor (tests). -> Tasks 10, 12
+4. Tolerated branch failures: workflow COMPLETES with result.failed_branches (keys + errors), event
+   workflow.completed_with_failed_branches, dashboard warning badge, timeline summary count. -> Tasks 8, 12
+5. until error + continue_with_best + best_by error -> fall back to the latest finished iteration, reason in the
+   event. -> Task 9
+If GitHub refuses the CI workflow push: stop and tell the user (they run gh auth refresh -s workflow).
