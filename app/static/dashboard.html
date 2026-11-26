@@ -17,6 +17,7 @@
     --ink: #1d1f24; --muted: #555c67; --oak: #2b211b; --oak-2: #44342a; --on-oak: #f3ede3; --brass: #d2a457;
     --brass-ink: #7d5a1c; /* call numbers on light card stock (brass itself is for the oak bar) */
     --rule: #b3261e; --link: #9a2a1f; --fill: #2b211b;
+    --primary: var(--oak); --primary-hover: var(--oak-2); --on-primary: var(--on-oak);
     --ok: #1d6b3a; --warn: #8a5a00; --bad: #b42318; --info: #1f4e8c; --idle: #5c6370;
     --f-head: "Libre Franklin", system-ui, sans-serif; --f-data: "Courier Prime", ui-monospace, monospace;
     --f-body: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -28,6 +29,7 @@
       --ground: #121417; --surface: #191c21; --card: #211d16; --card-line: #3d3428; --line: #2d323a;
       --ink: #e9e6e0; --muted: #b0aca3; --oak: #33271f; --oak-2: #4a3a2e; --on-oak: #f3ebdf; --brass: #dcb064;
       --brass-ink: #dcb064; --rule: #e05a4e; --link: #f09a8f; --fill: #dcb064;
+      --primary: #dcb064; --primary-hover: #e8c27f; --on-primary: #1a140f; /* oak is too quiet on dark cards */
       --ok: #62c48f; --warn: #e3ab4c; --bad: #f2806f; --info: #93b6ee; --idle: #9ba2ae;
       --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 8px 22px -12px rgba(0, 0, 0, .6);
       color-scheme: dark;
@@ -56,8 +58,8 @@
            border-radius: var(--r); padding: 8px 12px; cursor: pointer; white-space: nowrap;
            transition: background-color .15s, border-color .15s, color .15s; }
   button:hover:not(:disabled) { border-color: color-mix(in srgb, var(--ink) 35%, var(--line)); }
-  button.primary { background: var(--oak); border-color: var(--oak); color: var(--on-oak); }
-  button.primary:hover:not(:disabled) { background: var(--oak-2); border-color: var(--oak-2); }
+  button.primary { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
+  button.primary:hover:not(:disabled) { background: var(--primary-hover); border-color: var(--primary-hover); }
   button.danger { color: var(--bad); }
   button:disabled { opacity: .45; cursor: not-allowed; }
   label.field { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
@@ -133,6 +135,7 @@
   .wf[aria-current="true"] { background: var(--card); border-color: var(--card-line); box-shadow: inset 0 -2px 0 var(--rule); }
   .wf .name { font-weight: 600; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .wf .sub { display: flex; align-items: baseline; gap: 10px; font-size: 12px; color: var(--muted); }
+  .wf .sub .when { white-space: nowrap; }
   .wf .sub .pill { margin-left: auto; }
   .pill { display: inline-flex; align-items: center; font: 600 11px/1 var(--f-body); padding: 4px 7px; border-radius: 999px;
           white-space: nowrap; color: var(--st); background: color-mix(in srgb, var(--st) 13%, transparent);
@@ -283,6 +286,7 @@ const human = (s) => String(s).replaceAll("_", " ").toLowerCase();
 const pill = (s, prefix = "s") => `<span class="pill ${prefix}-${esc(s)}">${esc(human(s))}</span>`;
 const icon = (name) => `<svg class="i" aria-hidden="true"><use href="#i-${name}"/></svg>`;
 const callno = (id) => "AF-" + String(id).slice(0, 6).toUpperCase();
+const shortDate = (iso) => new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 const money = (v) => v == null ? "unknown" : "$" + Number(v).toFixed(Number(v) < 0.01 ? 4 : 2);
 const PROVIDER_NAMES = { gemini: "Gemini", anthropic: "Anthropic", openai: "OpenAI", ollama: "Ollama", fake: "Fake (demo)" };
 const store = { get(k) { try { return localStorage.getItem(k) || ""; } catch { return ""; } },
@@ -312,10 +316,10 @@ function swap(el, html) {
   const active = document.activeElement;
   if (active && el.contains(active) && active.matches("input, textarea, select")) return false;
   const focusKey = active && el.contains(active) ? keyOf(active) : null;
-  const scrolls = [...el.querySelectorAll(".events, .scroll, #list")].map((n) => n.scrollTop);
+  const scrolls = [...el.querySelectorAll(".events, .scroll, #list")].map((n) => [n.scrollTop, n.scrollLeft]);
   el.innerHTML = html;
   el.dataset.html = html;
-  [...el.querySelectorAll(".events, .scroll, #list")].forEach((n, i) => { if (scrolls[i]) n.scrollTop = scrolls[i]; });
+  [...el.querySelectorAll(".events, .scroll, #list")].forEach((n, i) => { if (scrolls[i]) [n.scrollTop, n.scrollLeft] = scrolls[i]; });
   if (focusKey) { const again = el.querySelector(focusKey); if (again) again.focus({ preventScroll: true }); }
   return true;
 }
@@ -425,7 +429,7 @@ async function loadList() {
   swap($("list"), data.items.length ? data.items.map((w) => `
     <div class="wf" role="link" tabindex="0" data-id="${esc(w.id)}" aria-current="${w.id === selected}">
       <span class="name">${esc(w.name)}</span>
-      <span class="sub"><span class="callno">${callno(w.id)}</span><span>${esc(new Date(w.created_at).toLocaleString())}</span>${pill(w.status)}</span>
+      <span class="sub"><span class="callno">${callno(w.id)}</span><span class="when">${esc(shortDate(w.created_at))}</span>${pill(w.status)}</span>
     </div>`).join("") : `<div class="empty">Nothing filed yet. File a goal above.</div>`);
   for (const w of data.items) {
     if (lastStatus[w.id] && lastStatus[w.id] !== w.status) announce(`${w.name}: now ${human(w.status)}.`);
