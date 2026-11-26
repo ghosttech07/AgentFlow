@@ -20,7 +20,9 @@ async def run_research(client: AsyncClient, make_engine, session_factory) -> str
     output = {**RESEARCH, "sources": [{"title": "x", "url": "https://news.example.com/india-ev-sales-2026"},
                                       {"title": "y", "url": "https://invented.example.org/a"}]}
     llm = FakeLLMClient(scripts=[FakeScript(match=match("r"), steps=[
-        call("web_search", query="india ev"), call("web_search", query="india ev"), call("web_fetch", uri="bad"),
+        # The evil page comes from the search results, so fetching it is allowed by link provenance (Part 10 0a).
+        call("web_search", query="malicious ev page"), call("web_search", query="malicious ev page"),
+        call("web_fetch", uri="bad"),
         call("web_fetch", url="https://evil.example/ev-report"), final(output)])])
     router, _ = fake_router(session_factory, llm=llm)
     wf = await started_workflow(client, [task("r", "researcher")])
@@ -45,7 +47,7 @@ async def test_timeline_summary_and_markers(client: AsyncClient, make_engine, se
     tl = (await client.get(f"/workflows/{wf}/timeline")).json()
     s = tl["summary"]
     assert s["tool_calls_by_tool"] == {"web_search": 2, "web_fetch": 1} and s["tool_calls_reused"] == 1
-    assert (s["sources_verified"], s["sources_removed"], s["injection_flags"]) == (1, 1, 1)
+    assert (s["sources_verified"], s["sources_removed"], s["injection_flags"]) == (1, 1, 2)  # snippet + page
     markers = tl["spans"][0]["attempts"][0]["tool_calls"]
     assert [m["tool"] for m in markers] == ["web_search", "web_search", "web_fetch", "web_fetch"]
     texts = [e["text"] for e in tl["entries"]]
