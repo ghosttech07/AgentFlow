@@ -371,3 +371,20 @@ async def detail_with_usage(session: AsyncSession, workflow: Workflow) -> Any:
     detail.usage = usage.as_dict()
     detail.remaining = budget_service.remaining(detail.effective_budget, usage)
     return detail
+
+
+async def list_tool_calls(session: AsyncSession, workflow_id: uuid.UUID, key: str) -> list[dict[str, Any]]:
+    """Part 9 tool journal for one task (all attempts), in order. Rows are stored already redacted."""
+    from app.models.tool_call import ToolCall
+
+    task = await get_task_by_key(session, workflow_id, key)
+    rows = (await session.scalars(select(ToolCall).where(ToolCall.task_id == task.id)
+                                  .order_by(ToolCall.attempt_number, ToolCall.step_index, ToolCall.created_at))).all()
+    return [{"id": str(r.id), "attempt_number": r.attempt_number, "step_index": r.step_index, "tool": r.tool,
+             "arguments": r.arguments, "proposed_arguments": r.proposed_arguments, "side_effect": r.side_effect,
+             "status": r.status, "result": r.result, "error": r.error, "reason": r.reason,
+             "tainted_context": r.tainted_context, "injection_warnings": r.injection_warnings,
+             "reused": r.reused_from_id is not None, "approval_id": str(r.approval_id) if r.approval_id else None,
+             "idempotency_key": r.idempotency_key, "duration_ms": r.duration_ms,
+             "started_at": r.started_at.isoformat() if r.started_at else None,
+             "finished_at": r.finished_at.isoformat() if r.finished_at else None} for r in rows]

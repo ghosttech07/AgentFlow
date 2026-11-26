@@ -162,6 +162,15 @@ async def list_task_attempts(
     return [AttemptRead.model_validate(r) for r in rows]
 
 
+@router.get("/{workflow_id}/tasks/{key}/tool-calls", responses=NOT_FOUND)
+async def list_task_tool_calls(
+    workflow_id: uuid.UUID, key: str, session: AsyncSession = Depends(get_session)
+) -> list[dict[str, Any]]:
+    """The task's tool journal (Part 9), oldest first: every proposed tool call with its arguments (secrets
+    redacted), status, result preview, duration, and whether it was reused or made with untrusted context."""
+    return await workflow_service.list_tool_calls(session, workflow_id, key)
+
+
 @router.get("/{workflow_id}/tasks/{key}", response_model=TaskRead, responses=NOT_FOUND)
 async def get_workflow_task(
     workflow_id: uuid.UUID, key: str, session: AsyncSession = Depends(get_session)

@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.attempt import TaskAttempt
 from app.models.event import WorkflowEvent
+from app.models.tool_call import ToolCall
 from app.models.usage import LLMCall
 from app.services.workflow_service import get_workflow
 
@@ -66,7 +67,13 @@ def describe(event_type: str, p: dict[str, Any]) -> str:
         "task.interrupted": f"{key} interrupted{who}",
         "task.cancelled": f"{key} cancelled{who}",
         "task.skipped": f"{key} skipped (upstream {p.get('upstream')} rejected)",
-        "approval.requested": f"Approval requested for {key}",
+        "approval.requested": (f"{key} wants to use {p.get('tool')}: approval requested"
+                               + (" (read untrusted content)" if p.get("tainted") else "")
+                               if p.get("kind") == "tool_call" else f"Approval requested for {key}"),
+        "task.sources_verified": f"{key} sources checked by code: {p.get('verified')} verified, "
+                                 f"{p.get('removed')} removed (never opened)",
+        "tool.injection_suspected": f"{key}: suspicious text in {p.get('source')} "
+                                    f"({', '.join(p.get('rules') or [])}); flagged, not followed",
         "approval.approved": f"{key} approved{who}"
                              + (f", input changed: {sorted(p['input_changes'])}" if p.get("input_changes") else ""),
         "approval.rejected": f"{key} rejected{who} ({p.get('on_reject')}){why}",
@@ -113,6 +120,16 @@ async def get_timeline(session: AsyncSession, workflow_id: uuid.UUID) -> dict[st
         }
         for t in wf.tasks
     ]
+    tool_rows = (await session.scalars(select(ToolCall).where(ToolCall.workflow_id == workflow_id)
+                                       .order_by(ToolCall.created_at))).all()
+    tools_by_attempt: dict[tuple[uuid.UUID, int], list[dict[str, Any]]] = {}
+    for r in tool_rows:
+        tools_by_attempt.setdefault((r.task_id, r.attempt_number), []).append(
+            {"tool": r.tool, "status": r.status, "offset_s": _offset(r.started_at or r.created_at, origin),
+             "reused": r.reused_from_id is not None, "tainted": r.tainted_context})
+    for span, t in zip(spans, wf.tasks, strict=True):
+        for a in span["attempts"]:
+            a["tool_calls"] = tools_by_attempt.get((t.id, a["attempt_number"]), [])
     calls = (await session.scalars(select(LLMCall).where(LLMCall.workflow_id == workflow_id))).all()
     cost_by_provider: dict[str, float | None] = {}
     for c in calls:  # failed calls cost nothing; one unpriced success makes that provider's total unknown
@@ -136,6 +153,13 @@ async def get_timeline(session: AsyncSession, workflow_id: uuid.UUID) -> dict[st
         "fallbacks": sum(1 for c in calls if c.outcome == "succeeded" and c.fallback_from),
         "cost_by_provider": cost_by_provider,
         "cost_usd": round(sum(c.cost_usd or 0 for c in calls), 6),
+        # Part 9 tools
+        "tool_calls_by_tool": dict(Counter(r.tool for r in tool_rows if r.status != "rejected_invalid")),
+        "tool_calls_reused": sum(1 for r in tool_rows if r.reused_from_id is not None),
+        "tool_approvals": dict(Counter(a.status for a in wf.approvals if a.kind == "tool_call")),
+        "sources_verified": sum(e.payload.get("verified", 0) for e in events if e.event_type == "task.sources_verified"),
+        "sources_removed": sum(e.payload.get("removed", 0) for e in events if e.event_type == "task.sources_verified"),
+        "injection_flags": types["tool.injection_suspected"],
     }
     end = wf.completed_at
     return {

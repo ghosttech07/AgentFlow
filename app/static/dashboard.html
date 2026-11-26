@@ -134,6 +134,15 @@ a.cite { font-size: 12px; font-weight: 700; text-decoration: none; background: v
 .steps li:first-child { border-top: 0; }
 .steps .who { color: var(--ink-3); font-size: 13px; margin-left: auto; text-align: right; }
 .steps .err { color: var(--bad); font-size: 13px; display: block; }
+.steps li { flex-wrap: wrap; }
+.tools { list-style: none; margin: 6px 0 0 19px; padding: 0; width: 100%; font-size: 13px; color: var(--ink-2); }
+.tools li { border: 0; padding: 3px 0; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.tools .tn { font-weight: 600; color: var(--ink); }
+.tools .ta { color: var(--ink-3); overflow-wrap: anywhere; }
+.badge { font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 99px; background: var(--bg); border: 1px solid var(--line); }
+.badge.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
+.badge.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); }
+.badge.ok { color: var(--ok); }
 .ask-card { border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--line)); background: var(--surface); border-radius: var(--radius); padding: 16px 18px; margin: 0 0 18px; box-shadow: var(--shadow); }
 .ask-card h3 { margin: 0 0 6px; font-size: 16px; display: flex; gap: 8px; align-items: center; }
 .ask-card p { margin: 0 0 8px; color: var(--ink-2); font-size: 14px; }
@@ -446,7 +455,27 @@ function approvalHtml(a) {
       <button class="btn" data-d="skip_task">Skip this step</button><button class="btn danger" data-d="fail_workflow">Stop the research</button></div></section>`;
 }
 
-let lastResearchHtml = "";
+let lastResearchHtml = "", toolCalls = {};
+const TOOL_STATUS = { succeeded: ["done", "ok"], failed: ["failed", "bad"], rejected_invalid: ["invalid call", "bad"],
+  awaiting_approval: ["waiting for approval", "warn"], approved: ["approved", "ok"], denied: ["denied", "bad"],
+  running: ["running", ""], unknown_outcome: ["outcome unknown", "warn"] };
+function argPreview(a) {
+  if (!a) return "";
+  const v = a.query || a.url || a.expression || a.path || (a.to && `to ${[].concat(a.to).join(", ")}`) || JSON.stringify(a);
+  return String(v).slice(0, 110);
+}
+function toolList(rows) {
+  if (!rows || !rows.length) return "";
+  return `<ul class="tools" aria-label="Tool calls">${rows.map((r) => {
+    const [label, cls] = TOOL_STATUS[r.status] || [r.status, ""];
+    return `<li><span class="tn">${esc(r.tool)}</span><span class="ta">${esc(argPreview(r.arguments))}</span>
+      <span class="badge ${cls}" title="${esc(r.error || "")}">${esc(label)}</span>
+      ${r.reused ? `<span class="badge" title="Result reused from the journal; not executed again">reused</span>` : ""}
+      ${r.tainted_context ? `<span class="badge warn" title="Made after reading untrusted web content">untrusted input</span>` : ""}
+      ${(r.injection_warnings || []).length ? `<span class="badge bad" title="${esc(r.injection_warnings.join(", "))}">suspicious page</span>` : ""}
+      ${r.duration_ms != null && !r.reused ? `<span class="ta">${r.duration_ms} ms</span>` : ""}</li>`;
+  }).join("")}</ul>`;
+}
 async function showResearch(id, quiet = false) {
   if (!quiet) { lastResearchHtml = ""; $("content").innerHTML = `<div class="view"><div class="skel" style="width:60%;height:26px"></div><div class="skel"></div></div>`; }
   if (document.activeElement && $("content").contains(document.activeElement) && document.activeElement.matches("input, textarea")) return;
@@ -454,13 +483,17 @@ async function showResearch(id, quiet = false) {
   try {
     [wf, pend, tl] = await Promise.all([api("GET", `/workflows/${id}`), api("GET", `/approvals?status=pending&workflow_id=${id}`),
       api("GET", `/workflows/${id}/timeline`).catch(() => null)]);
+    // Part 9: the tool journal of every task that has used a tool (from the timeline's markers)
+    const used = (tl ? tl.spans : []).filter((s) => s.attempts.some((a) => (a.tool_calls || []).length)).map((s) => s.task_key);
+    const lists = await Promise.all(used.map((k) => api("GET", `/workflows/${id}/tasks/${encodeURIComponent(k)}/tool-calls`).catch(() => [])));
+    toolCalls = Object.fromEntries(used.map((k, i) => [k, lists[i]]));
   } catch (err) { $("content").innerHTML = `<div class="view"><div class="note bad">${esc(err.message)}</div></div>`; return; }
   const p = wf.progress, done = p.succeeded + p.skipped, c = wf.controls;
   const budgetPaused = wf.status === "PAUSED" && tl && tl.entries.some((e) => e.event_type === "workflow.budget_exceeded");
   const steps = wf.tasks.map((t) => {
     const cls = { RUNNING: "run", RETRYING: "run", AWAITING_APPROVAL: "wait", SUCCEEDED: "ok", FAILED: "bad" }[t.status] || "";
     return `<li><span class="dot ${cls}"></span><span>${esc(t.name)}${t.error && t.status === "FAILED" ? `<span class="err">${esc(t.error.slice(0, 180))}</span>` : ""}</span>
-      <span class="who">${esc(AGENT[t.agent_type] || t.agent_type)} · ${esc(TASK_STATUS[t.status] || t.status)}</span></li>`;
+      <span class="who">${esc(AGENT[t.agent_type] || t.agent_type)} · ${esc(TASK_STATUS[t.status] || t.status)}</span>${toolList(toolCalls[t.key])}</li>`;
   }).join("");
   const u = wf.usage || {}, eff = wf.effective_budget || {};
   const html = `<div class="view">
