@@ -111,8 +111,16 @@ async def test_live_ollama_full_workflow(app: FastAPI, client: AsyncClient, make
         "name": "ollama live", "goal": "Write a 120-word beginner explainer on what a heat pump is.",
         "run": True, "constraints": {"max_tasks": 3}})
     assert resp.status_code == 202
-    await make_engine(router, task_timeout_seconds=600).run_until_idle(timeout=1800)
-    wf = (await client.get(f"/workflows/{resp.json()['id']}")).json()
+    engine = make_engine(router, task_timeout_seconds=600)
+    wf_id = resp.json()["id"]
+    for _ in range(5):  # a local planner may add approval steps (allowed); approve them like a human
+        await engine.run_until_idle(timeout=1800)
+        pending = (await client.get("/approvals", params={"status": "pending", "workflow_id": wf_id})).json()
+        if not pending:
+            break
+        for a in pending:
+            await client.post(f"/approvals/{a['id']}/approve", json={"actor": "live-test"})
+    wf = (await client.get(f"/workflows/{wf_id}")).json()
     print("\nplan:", [(t["key"], t["agent_type"]) for t in wf["tasks"]], "status:", wf["status"])
     for t in wf["tasks"]:
         print(f"  {t['key']}: {t['status']} via {(t['metrics'] or {}).get('provider')}:{(t['metrics'] or {}).get('model')}")
