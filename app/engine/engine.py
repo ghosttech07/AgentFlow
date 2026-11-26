@@ -140,6 +140,14 @@ class Engine:
                             runner_jobs.plan_and_start(self.session_factory, self.llm, workflow_id))
             work += started + len(to_plan)
 
+            # Part 10: re-plans waiting for the planner run as background jobs (like planning).
+            from app.services import replan_service
+
+            for workflow_id in await replan_service.claim_requested(self.session_factory):
+                self._spawn(self._jobs, workflow_id,
+                            replan_service.run_job(self.session_factory, self.llm, workflow_id, self.settings))
+                work += 1
+
         work += await scheduler.reap_expired_leases(self.session_factory, self.settings)
         work += await scheduler.schedule_running_workflows(self.session_factory, self.settings)
 

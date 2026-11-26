@@ -6,10 +6,12 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Response, status
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.auth import require_admin
 from app.core.enums import WorkflowStatus
+from app.core.plan_patch import PlanPatch
 from app.db.session import get_session
 from app.engine import Engine
 from app.engine.deps import get_engine
@@ -103,6 +105,43 @@ async def retry_workflow(
     if engine:
         engine.wake()
     return WorkflowDetail.from_model(workflow)
+
+
+class ReplanRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    actor: str = Field(default="admin", min_length=1, max_length=255)
+    instructions: str | None = Field(default=None, max_length=2000)
+
+
+class PlanPatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    actor: str = Field(default="admin", min_length=1, max_length=255)
+    patch: PlanPatch
+
+
+@router.post("/{workflow_id}/replan", status_code=202, response_model=WorkflowDetail,
+             dependencies=[Depends(require_admin)], responses={**NOT_FOUND, 409: {"model": ErrorResponse}})
+async def replan_workflow(workflow_id: uuid.UUID, body: ReplanRequest, session: AsyncSession = Depends(get_session),
+                          engine: Engine | None = Depends(get_engine)) -> WorkflowDetail:
+    """Ask the planner to patch the plan (any workflow that is RUNNING, AWAITING_APPROVAL, PAUSED or FAILED).
+    Finished, running and approved work is never changed; bounded by MAX_REPLANS."""
+    from app.services import replan_service
+
+    await replan_service.request_human(session, workflow_id, body.actor, body.instructions)
+    if engine:
+        engine.wake()
+    return await workflow_service.detail_with_usage(session, await workflow_service.get_workflow(session, workflow_id))
+
+
+@router.post("/{workflow_id}/plan-patch", response_model=WorkflowDetail, dependencies=[Depends(require_admin)],
+             responses={**NOT_FOUND, 409: {"model": ErrorResponse}, 422: {"model": ErrorResponse}})
+async def patch_plan(workflow_id: uuid.UUID, body: PlanPatchRequest, session: AsyncSession = Depends(get_session)
+                     ) -> WorkflowDetail:
+    """Apply a human-written plan patch while the workflow is PAUSED (same validation as the planner's)."""
+    from app.services import replan_service
+
+    await replan_service.human_patch(session, workflow_id, body.actor, body.patch)
+    return await workflow_service.detail_with_usage(session, await workflow_service.get_workflow(session, workflow_id))
 
 
 @router.post("/{workflow_id}/pause", response_model=WorkflowDetail, dependencies=[Depends(require_admin)],

@@ -158,7 +158,20 @@ async def schedule_workflow(
 
     # Failure: stop scheduling, but leave PENDING tasks untouched (Part 5 resumes them)
     # and let running siblings finish and save their output.
+    # Re-plan trigger (b): a succeeded task whose replan_if is true (evaluated once per task).
+    if await _check_replan_if(session, wf, tasks, settings):
+        await session.commit()
+        return changes + 1
+
     failed = [t for t in tasks if t.status == TaskStatus.FAILED and not tolerated_failure(t, tasks)]
+    # Re-plan trigger (a): the workflow opted in (planner-made plans) and a task failed for good.
+    if failed and _replan_on_failure(wf, failed[0], settings):
+        from app.services import replan_service
+
+        await replan_service.request(session, wf, trigger="task_failed", failed_task=failed[0].key,
+                                     reason=f"task '{failed[0].key}' failed ({failed[0].error_type}): {failed[0].error}")
+        await session.commit()
+        return changes + 1
     if failed:
         first = failed[0]
         wf.error = f"Task '{first.key}' failed ({first.error_type or 'unknown'}): {first.error}"
@@ -361,6 +374,39 @@ async def _choose_best(session: AsyncSession, wf: Workflow, tasks: list[Task], s
     record_event(session, workflow_id=wf.id, event_type=EventType.LOOP_EXHAUSTED,
                  payload={"loop": spec.name, "iteration": k, "mode": "continue_with_best", "chosen_iteration": chosen,
                           "scores": {str(i): v for i, v in scores.items()}, "reason": reason})
+
+
+def _replan_on_failure(wf: Workflow, failed: Task, settings: Settings) -> bool:
+    from app.services import replan_service
+
+    opted_in = bool(((wf.context or {}).get("adaptive") or {}).get("replan_on_failure"))
+    # condition_error never triggers a re-plan by itself (ruling 6); a human rejection is a decision, not a failure.
+    return (opted_in and failed.error_type not in ("condition_error", "rejected")
+            and replan_service.can_replan(wf, settings))
+
+
+async def _check_replan_if(session: AsyncSession, wf: Workflow, tasks: list[Task], settings: Settings) -> bool:
+    from app.services import replan_service
+
+    adaptive = dict((wf.context or {}).get("adaptive") or {})
+    checked = set(adaptive.get("replan_if_checked", []))
+    for t in tasks:
+        if not t.replan_if or t.status != TaskStatus.SUCCEEDED or str(t.id) in checked:
+            continue
+        checked.add(str(t.id))
+        wf.context = {**wf.context, "adaptive": {**adaptive, "replan_if_checked": sorted(checked)}}
+        try:
+            ok, values = parse_condition(t.replan_if).evaluate(condition_outputs([t, *t.dependencies]))
+            payload = {"task_key": t.key, "expression": t.replan_if, "result": ok, "values": values, "kind": "replan_if"}
+        except (ConditionError, ConditionSyntaxError) as exc:
+            ok, payload = False, {"task_key": t.key, "expression": t.replan_if, "error": str(exc), "kind": "replan_if"}
+        record_event(session, workflow_id=wf.id, task_id=t.id, event_type=EventType.TASK_CONDITION_EVALUATED,
+                     payload=payload)
+        if ok and replan_service.can_replan(wf, settings):
+            await replan_service.request(session, wf, trigger="replan_if", failed_task=None,
+                                         reason=f"replan_if on '{t.key}' is true ({t.replan_if})")
+            return True
+    return False
 
 
 def tolerated_failure(task: Task, tasks: list[Task]) -> bool:

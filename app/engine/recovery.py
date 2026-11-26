@@ -59,6 +59,17 @@ async def recover_on_startup(
             )
             replanned.append(wf.id)
 
+        # Part 10: a re-plan whose planner job died is requested again (patches apply in one transaction, so
+        # nothing partial exists); a proposed patch keeps waiting for its human decision.
+        replans = (await session.scalars(select(Workflow).where(Workflow.status == WorkflowStatus.REPLANNING)
+                                         .with_for_update(skip_locked=True))).all()
+        for wf in replans:
+            rp = dict((wf.context or {}).get("replan") or {})
+            if rp.get("state") in ("planning", "applying"):
+                rp["state"] = "requested"
+                wf.context = {**wf.context, "replan": rp}
+                replanned.append(wf.id)
+
         running = await session.scalar(
             select(func.count()).select_from(Workflow).where(Workflow.status == WorkflowStatus.RUNNING)
         )
