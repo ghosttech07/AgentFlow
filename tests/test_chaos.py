@@ -84,3 +84,19 @@ async def test_chaos_api_and_production_guard(client: AsyncClient, app) -> None:
 async def test_chaos_is_inert_in_production(session_factory: async_sessionmaker[AsyncSession]) -> None:
     settings = get_settings().model_copy(update={"app_env": "production"})
     await chaos.inject(session_factory, uuid.uuid4(), "a", settings)  # returns without touching the DB
+
+
+async def test_crash_after_tool_fires_only_after_that_tool_succeeded(
+    client: AsyncClient, session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wf_id = await started_workflow(client, [task("a")])
+    await add_rule(client, wf_id, "a", "crash_after_tool:send_email")
+    exits: list[int] = []
+    monkeypatch.setattr(chaos, "_hard_exit", lambda code: exits.append(code))
+    settings = get_settings()
+    await chaos.inject(session_factory, uuid.UUID(wf_id), "a", settings)  # agent start: not this rule
+    await chaos.after_tool(session_factory, uuid.UUID(wf_id), "a", "web_search", settings)  # other tool
+    assert exits == []
+    await chaos.after_tool(session_factory, uuid.UUID(wf_id), "a", "send_email", settings)
+    await chaos.after_tool(session_factory, uuid.UUID(wf_id), "a", "send_email", settings)  # used up
+    assert exits == [1]

@@ -67,6 +67,9 @@ class ToolRuntime:
     attempt_number: int  # task_attempts.attempt_number of the running attempt
     tools: list[str]
     tainted_from: list[str] = field(default_factory=list)  # upstream tainted task keys
+    # What made the upstream tainted (URLs read, injection flags), so an approver of a later send sees it.
+    inherited_sources: list[str] = field(default_factory=list)
+    inherited_warnings: list[str] = field(default_factory=list)
     resume: ResumeInfo | None = None
 
 
@@ -152,7 +155,9 @@ class ToolLoop:
         self.history: list[StepView] = []
         self.report = LoopReport()
         self.state = LoopState(tainted=bool(rt.tainted_from),
-                               untrusted_sources=[f"upstream task {k}" for k in rt.tainted_from])
+                               untrusted_sources=[*[f"upstream task {k}" for k in rt.tainted_from],
+                                                  *rt.inherited_sources],
+                               injection_warnings=list(rt.inherited_warnings))
         self.credentials = CredentialResolver(rt.config)
 
     # ------------------------------------------------------------------ helpers
@@ -271,6 +276,10 @@ class ToolLoop:
                                     secrets=self.credentials.secret_values(),
                                     **({"injection_warnings": warnings} if warnings else {}))
         logger.info("tool.%s tool=%s task=%s step=%d ms=%d", status, tool.name, self.rt.task_key, step_index, duration)
+        if status == "succeeded" and self.rt.settings.app_env != "production":
+            from app.engine import chaos
+
+            await chaos.after_tool(self.sf, self.rt.workflow_id, self.rt.task_key, tool.name, self.rt.settings)
         return StepView(index=step_index, tool=tool.name, arguments=args.model_dump(mode="json"), status=status,
                         result=result, error=error, untrusted=tool.untrusted,
                         source=_source_label(tool.name, args.model_dump(mode="json")), call_id=call_id)

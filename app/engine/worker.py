@@ -176,10 +176,35 @@ async def _build_tool_runtime(agent: Any, session_factory: async_sessionmaker[As
             .order_by(TaskAttempt.attempt_number.desc()).limit(1)) or 1
         task = await session.scalar(select(Task).where(Task.id == task_id).options(selectinload(Task.dependencies)))
         tainted_from = sorted(d.key for d in (task.dependencies if task else []) if d.tainted)
+        sources, warnings = await _earlier_untrusted(session, workflow_id, task_id) if tainted_from else ([], [])
         resume = await resume_info(session, task_id, attempt_number)
     return ToolRuntime(session_factory=session_factory, config=tools_config.get_tools_config(), settings=settings,
                        workflow_id=workflow_id, task_id=task_id, task_key=key, attempt_number=attempt_number,
-                       tools=tools, tainted_from=tainted_from, resume=resume)
+                       tools=tools, tainted_from=tainted_from, resume=resume, inherited_sources=sources,
+                       inherited_warnings=warnings)
+
+
+async def _earlier_untrusted(session: AsyncSession, workflow_id: uuid.UUID,
+                             task_id: uuid.UUID) -> tuple[list[str], list[str]]:
+    """Untrusted pages read and injection flags raised by OTHER tasks of this workflow (conservative: a human
+    approving a send from a tainted task should see everything suspicious the workflow has read)."""
+    from app.models.tool_call import ToolCall
+
+    rows = (await session.scalars(select(ToolCall).where(
+        ToolCall.workflow_id == workflow_id, ToolCall.task_id != task_id, ToolCall.status == "succeeded",
+        ToolCall.tool.in_(("web_search", "web_fetch", "http_request"))).order_by(ToolCall.created_at))).all()
+    sources: list[str] = []
+    warnings: list[str] = []
+    for r in rows:
+        args = r.arguments or {}
+        src = str(args.get("url") or (f"search: {args['query']}" if "query" in args else r.tool))[:300]
+        if r.tool != "web_search" and src not in sources:
+            sources.append(src)
+        for w in r.injection_warnings or []:
+            note = f"{w} ({src})"
+            if note not in warnings:
+                warnings.append(note)
+    return sources[:20], warnings
 
 
 async def _heartbeat(

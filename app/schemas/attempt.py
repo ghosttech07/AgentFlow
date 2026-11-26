@@ -25,7 +25,9 @@ class AttemptRead(BaseModel):
     latency_ms: int | None
 
 
-ChaosMode = Literal["crash_process", "raise_transient", "raise_overloaded", "raise_permanent", "hang"]
+# crash_after_tool:<tool> (Part 9): hard-exit right after that tool call succeeded and was journaled.
+ChaosMode = Literal["crash_process", "raise_transient", "raise_overloaded", "raise_permanent", "hang",
+                    "crash_after_tool:send_email", "crash_after_tool:webhook_post", "crash_after_tool:file_write"]
 
 
 class ChaosCreate(BaseModel):

