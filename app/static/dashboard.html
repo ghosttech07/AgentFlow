@@ -192,8 +192,8 @@ details.more summary { cursor: pointer; font-weight: 600; color: var(--ink-2); f
     <details class="settings">
       <summary><svg class="i"><use href="#i-gear"/></svg>Settings</summary>
       <label class="field">Your name (shown on approvals)<input id="actor" autocomplete="name" placeholder="admin"></label>
-      <label class="field">Admin key (only if the server requires one)<input id="apikey" type="password" autocomplete="off"></label>
-      <p class="hint">Kept in this browser only.</p>
+      <label class="field">Admin password (optional)<input id="apikey" type="password" autocomplete="off"></label>
+      <p class="hint">Leave empty unless your server sets ADMIN_API_KEY. This is not an AI key: AI keys stay in the server's .env file. Kept in this browser only.</p>
     </details>
   </aside>
 
@@ -254,7 +254,7 @@ async function api(method, path, body) {
   const resp = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   const data = resp.status === 204 ? null : await resp.json().catch(() => null);
   if (!resp.ok) {
-    if (resp.status === 401) throw new Error("This action needs the admin key. Add it under Settings.");
+    if (resp.status === 401) throw new Error("This action needs the admin password (Settings, bottom left).");
     throw new Error((data && data.error && data.error.message) || `Request failed (${resp.status})`);
   }
   return data;
