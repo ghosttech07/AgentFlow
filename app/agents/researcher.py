@@ -80,7 +80,10 @@ Rules:
             return await super().run(agent_input)  # Part 9: the model searches and reads with tools itself
         if self._uses_web_layer():
             self._web = await web.gather(research_queries(agent_input), self.settings)
-        return await super().run(agent_input)
+        result = await super().run(agent_input)
+        # Code-enforced taint without tools too: live web content (or grounding) entered this task's prompt.
+        result.tainted = bool((self._web is not None and self._web.sources) or result.sources)
+        return result
 
     def build_user_prompt(self, agent_input: AgentInput) -> str:
         prompt = super().build_user_prompt(agent_input)

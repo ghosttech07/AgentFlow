@@ -29,7 +29,7 @@ from app.llm.errors import BudgetPause, LLMOutputError
 from app.models.approval import Approval
 from app.models.tool_call import ToolCall
 from app.tools import journal
-from app.tools.base import Tool, ToolContext, ToolError
+from app.tools.base import WRITE_EFFECTS, Tool, ToolContext, ToolError
 from app.tools.config import CredentialResolver, ToolsConfig, approval_mode
 from app.tools.prompting import FINAL_NOW, PROTOCOL, UNTRUSTED_RULE, StepView, steps_section, tools_section
 from app.tools.registry import get_tool
@@ -209,8 +209,8 @@ class ToolLoop:
             self.state = resume.state.model_copy(deep=True)
         rows = await journal.transcript(self.sf, self.rt.task_id, resume.attempt_numbers)
         for row in rows:
-            if row.status in ("awaiting_approval", "approved", "running", "unknown_outcome", "proposed"):
-                continue  # handled below (pending / unknown calls)
+            if row.status in ("awaiting_approval", "approved", "running", "unknown_outcome", "proposed", "superseded"):
+                continue  # handled below (pending / unknown calls); superseded rows were replaced by a later row
             self._absorb(self._view(row))
         self.state.step_index = max([r.step_index + 1 for r in rows], default=0)
         # Calls whose outcome is open: the approved/denied pending call, or a call a dead attempt was running.
@@ -238,7 +238,9 @@ class ToolLoop:
     async def _settle_unknown(self, row: ToolCall) -> None:
         """A dead attempt was running this call: apply the unknown-outcome rules."""
         tool = self.tools.get(row.tool) or get_tool(row.tool)
-        await journal.mark_unknown(self.sf, row.id)
+        # Close it for good: the new row (re-run or human decision) replaces it, so it is never settled twice.
+        await journal.set_status(self.sf, row.id, "superseded", finished_at=utcnow(),
+                                 error="outcome unknown (its attempt ended while it ran); replaced by a new call")
         args = tool.input_model.model_validate(row.arguments or {})
         decision = journal.reuse_decision(ToolCall(status="unknown_outcome"), row.side_effect,
                                           tool.replay_safe(self._options(tool)), utcnow(), 0)
@@ -257,13 +259,24 @@ class ToolLoop:
                    flags: dict[str, Any] | None = None) -> StepView:
         start = time.monotonic()
         status, result, error = "succeeded", None, None
+        is_write = tool.side_effect_for(args) in WRITE_EFFECTS
         try:
             out = await asyncio.wait_for(tool.execute(args, self._ctx(tool, key, flags)), timeout=tool.timeout_seconds)
             result = out.model_dump(mode="json")
+        except asyncio.CancelledError:
+            # Cancel / immediate pause / lost lease while the tool ran: it may have happened. Journal that, then stop.
+            await asyncio.shield(journal.record_finish(
+                self.sf, call_id, status="unknown_outcome", duration_ms=int((time.monotonic() - start) * 1000),
+                error=f"{tool.name} was cancelled while running; outcome unknown"))
+            raise
         except ToolError as exc:
-            status, error = "failed", exc.message
+            # A write whose request may already have left (timeout, dropped connection) is not "failed": it may
+            # have happened. unknown_outcome makes a repeat go through the replay-safe / human rules.
+            status, error = ("unknown_outcome", f"outcome unknown: {exc.message}") if is_write and exc.transient \
+                else ("failed", exc.message)
         except TimeoutError:
-            status, error = "failed", f"{tool.name} timed out after {tool.timeout_seconds:g}s"
+            status, error = (("unknown_outcome", f"outcome unknown: {tool.name} timed out after {tool.timeout_seconds:g}s")
+                             if is_write else ("failed", f"{tool.name} timed out after {tool.timeout_seconds:g}s"))
         except (ValidationError, ValueError) as exc:
             status, error = "failed", f"{tool.name} failed: {str(exc)[:300]}"
         except Exception as exc:  # never crash the task on a tool bug; log it
@@ -400,7 +413,8 @@ class ToolLoop:
             return
         warning = None
         if decision in ("unknown_reexecute", "unknown_needs_approval") and prev is not None:
-            await journal.mark_unknown(self.sf, prev.id)
+            await journal.set_status(self.sf, prev.id, "superseded", finished_at=utcnow(),
+                                     error="outcome unknown; replaced by a new call")
             warning = "A previous attempt may have sent this (its outcome is unknown)."
         if decision == "unknown_needs_approval" or self._needs_approval(tool, side):
             await self._suspend(tool, args, reason, step_index, key, warning=warning)

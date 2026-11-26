@@ -67,7 +67,7 @@ class HttpRequestTool(Tool):
         resp = await netguard.guarded_request(
             args.url, method=args.method, headers=headers, params=args.query, json_body=args.json_body,
             max_bytes=int(ctx.options.get("max_bytes", 1_000_000)), timeout=float(ctx.options.get("timeout_seconds", 20)),
-            allowed_types=None,
+            allowed_types=None, max_redirects=0,  # a redirect could carry the credential to another host
         )
         body = resp.body.decode("utf-8", errors="replace")
         return HttpRequestResult(status=resp.status, content_type=resp.content_type,

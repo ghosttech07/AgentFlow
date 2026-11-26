@@ -255,6 +255,9 @@ details.more summary { cursor: pointer; font-weight: 600; color: var(--ink-2); f
 "use strict";
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+// Links from search results are untrusted: only http(s) may become a clickable href (no javascript: etc.).
+function hostOf(u) { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return String(u || "").slice(0, 60); } }
+function safeUrl(u) { return /^https?:\/\//i.test(String(u || "")) ? String(u) : "#"; }
 const icon = (n) => `<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
 const store = { get(k) { try { return localStorage.getItem(k) || ""; } catch { return ""; } },
                 set(k, v) { try { localStorage.setItem(k, v); } catch {} } };
@@ -294,7 +297,7 @@ function cite(html, sources) {
   const byN = Object.fromEntries((sources || []).map((s) => [s.n, s]));
   return html.replace(/\[(\d{1,2}(?:\s*[,;]\s*\d{1,2})*)\]/g, (m, group) => group.split(/[,;]/).map((n) => {
     const s = byN[Number(n)];
-    return s ? `<a class="cite" href="${esc(s.url)}" target="_blank" rel="noopener noreferrer" title="${esc(s.title)}">${Number(n)}</a>` : `[${esc(n.trim())}]`;
+    return s ? `<a class="cite" href="${esc(safeUrl(s.url))}" target="_blank" rel="noopener noreferrer" title="${esc(s.title)}">${Number(n)}</a>` : `[${esc(n.trim())}]`;
   }).join(""));
 }
 /* Minimal, safe Markdown: everything is escaped first; only headings, lists, bold and paragraphs are rebuilt. */
@@ -415,7 +418,7 @@ async function askQuestion(question) {
 
 function answerHtml(question, r) {
   const srcs = r.sources || [];
-  const cards = srcs.map((s) => `<a class="src ${s.cited ? "" : "uncited"}" href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">
+  const cards = srcs.map((s) => `<a class="src ${s.cited ? "" : "uncited"}" href="${esc(safeUrl(s.url))}" target="_blank" rel="noopener noreferrer">
       <b>${esc(s.title || s.domain)}</b><span><span class="n">${s.n}</span>${esc(s.domain)}${s.cited ? "" : " · not cited"}</span></a>`).join("");
   const secs = r.timings_ms ? (r.timings_ms.total / 1000).toFixed(1) : null;
   return `<div class="view"><h2 class="q">${esc(question)}</h2>
@@ -450,7 +453,7 @@ function reportHtml(wf) {
     const body = String(writer.output.content || "").replace(/^\s*#{1,3}\s+(.*)\n/, (m, h) => h.trim().replace(/^\[demo\]\s*/, "") === String(writer.output.title).replace(/^\[demo\]\s*/, "").trim() ? "" : m);
     return `<article class="report"><h2 class="title">${esc(writer.output.title)}</h2><div class="prose">${md(body)}</div>
       ${reviewer ? `<p class="hint">Reviewed: ${esc(reviewer.output.summary)} (score ${esc(reviewer.output.score)}/10)</p>` : ""}</article>
-      ${sources.length ? `<div class="sub">Sources</div><div class="srcrow">${sources.map((s) => `<a class="src" href="${esc(s.url)}" target="_blank" rel="noopener noreferrer"><b>${esc(s.title || s.url)}</b><span>${esc(new URL(s.url, location.href).hostname.replace(/^www\./, ""))}</span></a>`).join("")}</div>` : ""}`;
+      ${sources.length ? `<div class="sub">Sources</div><div class="srcrow">${sources.map((s) => `<a class="src" href="${esc(safeUrl(s.url))}" target="_blank" rel="noopener noreferrer"><b>${esc(s.title || s.url)}</b><span>${esc(hostOf(s.url))}</span></a>`).join("")}</div>` : ""}`;
   }
   if (research.length) {
     const r = research.at(-1).output;

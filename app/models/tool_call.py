@@ -19,7 +19,7 @@ from app.db.base import Base, utcnow
 
 TOOL_CALL_STATUSES = (
     "proposed", "rejected_invalid", "awaiting_approval", "approved", "denied",
-    "running", "succeeded", "failed", "unknown_outcome",
+    "running", "succeeded", "failed", "unknown_outcome", "superseded",
 )
 
 

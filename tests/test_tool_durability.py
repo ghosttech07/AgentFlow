@@ -118,7 +118,7 @@ async def test_unknown_webhook_outcome_is_resent_with_the_same_idempotency_key(
     await engine.run_until_idle()
     assert (await detail(client, wf_id))["status"] == "COMPLETED"
     assert len(sent) == 1 and sent[0].headers["idempotency-key"] == key  # the receiver can de-duplicate
-    assert [r.status for r in await tool_rows(session_factory, wf_id)] == ["unknown_outcome", "succeeded"]
+    assert [r.status for r in await tool_rows(session_factory, wf_id)] == ["superseded", "succeeded"]
 
 
 async def test_unknown_smtp_outcome_goes_to_a_human(client: AsyncClient, make_engine, session_factory,
