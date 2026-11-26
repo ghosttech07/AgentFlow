@@ -31,11 +31,11 @@ from app.models.approval import Approval
 from app.models.tool_call import ToolCall
 from app.tools import journal
 from app.tools.base import WRITE_EFFECTS, Tool, ToolContext, ToolError
-from app.tools.exfil import ExfilContext, check_read_url, tokens_in, urls_in
-from app.tools.sources import normalize_url
 from app.tools.config import CredentialResolver, ToolsConfig, approval_mode
+from app.tools.exfil import ExfilContext, check_read_url, tokens_in, urls_in
 from app.tools.prompting import FINAL_NOW, PROTOCOL, UNTRUSTED_RULE, StepView, steps_section, tools_section
 from app.tools.registry import get_tool
+from app.tools.sources import normalize_url
 
 if TYPE_CHECKING:
     from app.agents.base import AgentInput, BaseAgent

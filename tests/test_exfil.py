@@ -4,8 +4,6 @@ output); otherwise a human approves it. Normal research is not affected."""
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 from httpx import AsyncClient
 
