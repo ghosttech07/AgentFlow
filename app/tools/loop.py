@@ -362,6 +362,19 @@ class ToolLoop:
                 result[k] = v[:limit] + f" ... [truncated {len(v) - limit} chars]"
         return result
 
+    async def _policy(self, tool: Tool, args: dict[str, Any], side: str) -> Any:
+        from app.governance.policy import get_policies, recipients_of
+
+        if not hasattr(self, "_team_name"):
+            from app.models.governance import Team
+            from app.models.workflow import Workflow
+
+            async with self.sf() as s:
+                self._team_name = await s.scalar(select(Team.name).join(Workflow, Workflow.team_id == Team.id)
+                                                 .where(Workflow.id == self.rt.workflow_id))
+        return get_policies().evaluate(scope="tool", agent_type=self.agent.agent_type, task_key=self.rt.task_key, tool=tool.name,
+                                       side_effect=side, team=self._team_name, recipients=recipients_of(args))
+
     def _needs_approval(self, tool: Tool, side_effect: str) -> bool:
         mode = approval_mode(tool, self.rt.config)
         if self.state.tainted and side_effect == "external_write":
@@ -442,6 +455,14 @@ class ToolLoop:
             return
         args_dict = args.model_dump(mode="json")
         side = tool.side_effect_for(args)
+        pol = await self._policy(tool, args_dict, side)  # Part 11: policy-as-code can deny or require a human
+        if pol.deny:
+            msg = f"denied by policy ({', '.join(pol.rules)}); do not retry this call"
+            view_id = await journal.record_step(self.sf, **self._base_row(
+                step_index, tool.name, side, status="rejected_invalid", arguments=args_dict, reason=reason, error=msg))
+            self._absorb(StepView(index=step_index, tool=tool.name, arguments=args_dict, status="rejected_invalid",
+                                  error=msg, call_id=view_id))
+            return
         h = journal.args_hash(args_dict)
         key = journal.idempotency_key(self.rt.workflow_id, self.rt.task_key, tool.name, h)
         async with self.sf() as s:
@@ -465,7 +486,7 @@ class ToolLoop:
             await journal.set_status(self.sf, prev.id, "superseded", finished_at=utcnow(),
                                      error="outcome unknown; replaced by a new call")
             warning = "A previous attempt may have sent this (its outcome is unknown)."
-        if decision == "unknown_needs_approval" or self._needs_approval(tool, side):
+        if decision == "unknown_needs_approval" or pol.require or self._needs_approval(tool, side):
             await self._suspend(tool, args, reason, step_index, key, warning=warning)
         await self._budget_check()
         call_id = await journal.record_start(self.sf, secrets=self.credentials.secret_values(), **self._base_row(

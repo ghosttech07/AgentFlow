@@ -321,6 +321,101 @@ is not trusted, the call is held for a human. A URL counts as trusted only if it
 5. A second run that answers from memory with fewer calls.
 6. An exfiltration attempt that is held for a human.
 
+## Users, teams, roles and policies
+
+Each person gets their own key. Each key belongs to one team and has one role. Rules about who must approve what
+are written in a file and checked by code.
+
+### Getting started
+
+1. Set `ADMIN_API_KEY` (the bootstrap / break-glass key).
+2. Create teams and users with it:
+
+```bash
+curl -X POST localhost:8000/admin/teams -H "X-API-Key: $ADMIN" -d '{"name": "research"}'
+curl -X POST localhost:8000/admin/users -H "X-API-Key: $ADMIN" \
+     -d '{"name": "ann", "role": "approver", "team": "research"}'   # returns ann's api_key ONCE
+```
+
+- **Keys are stored safely.** Only a sha256 of each key is stored, and keys are never logged.
+- **Managing keys:** `POST /admin/users/{id}/rotate-key` replaces a key, and `POST /admin/users/{id}/disable`
+  turns a user off. Either one makes the old key stop working at once.
+- **Checking a key:** `GET /me` shows who a key belongs to. The dashboard shows it under Settings.
+
+### Roles
+
+The roles are ordered; each one can do everything the roles above it can.
+
+| Role | Can |
+|---|---|
+| viewer | Read their team's workflows, approvals, timeline and memory |
+| operator | Also create, start, pause, resume, cancel, retry, re-plan and change budgets |
+| approver | Also approve or reject |
+| admin | Also manage users. With no team, an admin sees every team. |
+
+### Teams are kept apart
+
+- A user only sees their own team's workflows, approvals, events and memories.
+- Another team's object answers **404**, so its existence is not revealed.
+- Memory is stored under the team's own namespace, and Quick Ask history is per team.
+- The actor recorded on every action is the signed-in user, whatever the request body says.
+
+### Backward compatible
+
+- **No `ADMIN_API_KEY` and no users:** everything is open, as before.
+- **`ADMIN_API_KEY` but no users:** reads are open and controls need the key, as before.
+- **Once a user exists:** a key is needed for all workflow, approval and memory endpoints.
+
+### Policies (`config/policies.yaml`, see `config/policies.example.yaml`)
+
+```yaml
+rules:
+  - name: publish_needs_two_approvers
+    when: {agent_type: publisher}
+    approvals: 2                # N DIFFERENT people
+    approver_role: approver
+  - name: email_outside_the_company
+    when: {tool: send_email, recipient_not_in_domains: [example.com]}
+    require_approval: true
+  - name: marketing_cannot_call_webhooks
+    when: {tool: webhook_post, team: marketing}
+    deny: true                  # the call is refused and the agent is told why
+```
+
+- **How a rule matches:** every key in `when` must match. The keys are `agent_type`, `task_key` (glob), `tool`,
+  `team`, `side_effect` and `recipient_not_in_domains`.
+- **When several rules match,** the strictest wins.
+- **Tool rules and task rules are separate.** A rule with a `tool`, `side_effect` or recipient condition applies to
+  single tool calls. Any other rule applies to whole tasks. `deny` needs a tool condition.
+- **An approver's edits are checked again.** Edited tool arguments go through the policy again, so an approver who
+  changes the recipient to an outside address triggers the stricter rule.
+- **The file is checked at startup.** A bad file stops the app. `GET /admin/policies` lists the rules and the
+  safety floor.
+
+**How multi-approver approvals work:**
+
+- **Every approver counts.** Each person's yes is recorded as a vote (`votes`, event `approval.vote_recorded`).
+  The step runs only after `approvals` different people have said yes.
+- **An edit restarts the vote.** If an approver edits the content, earlier votes are cleared, so everyone approves
+  exactly what will run.
+- **One no is enough.** A single rejection by an eligible approver rejects.
+
+### Safety floor (code; no policy, role or API call can turn it off)
+
+1. A sensitive agent (publisher) always needs an approval.
+2. An outside write from a tainted task always needs an approval.
+3. Policies can only *add* requirements. `require_approval: false` is refused when the file is loaded.
+4. Only approvers and admins can approve. A lower `approver_role` is raised to approver.
+5. When 2 or more approvers are needed:
+   - each person votes once;
+   - the admin key counts as one person;
+   - the person who created the workflow can't vote (four eyes).
+6. One rejection rejects.
+
+**Demo:** `python scripts/governance_demo.py`. It runs offline and covers 12 checks: teams and users, isolation,
+roles, two approvers, four eyes, and the safety floor. Afterwards it removes its own users, so the other demos
+keep running without keys.
+
 ## How failures are handled
 
 | Failure | What happens |
@@ -362,8 +457,8 @@ Honest status as of 2026-11-26:
 - **OpenAI's strict structured-output mode may reject the free-form `arguments` object** of the tool protocol
   (Gemini and Ollama accept it); not tested live (no OpenAI key).
 - **No code-execution tool** and no native function calling (both future work).
-- **No user accounts yet.** The history is shared by everyone using the server, and control actions
-  are protected by one admin password (`ADMIN_API_KEY`). Users, roles and policies are Part 11.
+- **Keys are API keys** (no SSO / OIDC login yet). Cross-team totals (`/metrics/summary`, `/engine/status`) are
+  for global admins only.
 - **Free web search is best-effort.** Without a Tavily key the researcher uses free metasearch, which
   can be throttled or return thin results. Gemini's own Google Search grounding needs billing.
 - **Small local models are weak at planning and writing.** `llama3.2:3b` researches well enough but
@@ -385,7 +480,7 @@ Honest status as of 2026-11-26:
 | 8: multi-provider AI and cost control | Done |
 | 9: tools and safe actions (web, HTTP APIs, SQL, files, email, webhooks; crash-safe journal, approvals, taint tracking) | Done |
 | 10: adaptive workflows (feedback loops, conditional branches, bounded re-planning, memory) | Done |
-| 11: policy engine, users and roles, multiple approvers | Planned |
+| 11: policy engine, users and roles, team isolation, multiple approvers | Done |
 | 12: tamper-evident audit trail, reproducibility, PII redaction | Planned |
 | 13: quality engine (evals, quality gates, replay) | Planned |
 | 14: real-time updates and scale (SSE, LISTEN/NOTIFY, multiple workers, load test) | Planned |
@@ -422,6 +517,7 @@ The most used settings (`.env`; the full list with comments is in [.env.example]
 | `OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Local models, used when Ollama is running |
 | `MODELS_CONFIG_PATH` | `config/models.yaml` | Routes per agent role, quotas ([example](config/models.example.yaml)) |
 | `TOOLS_CONFIG_PATH` | `config/tools.yaml` | Tools per agent, allowlists, approvals ([example](config/tools.example.yaml)); no file = no tools |
+| `POLICIES_CONFIG_PATH` | `config/policies.yaml` | Approval / deny rules ([example](config/policies.example.yaml)); no file = only the safety floor |
 | `DEFAULT_MAX_LLM_CALLS` | 50 | Default budget safety net per workflow |
 | `ENGINE_MAX_CONCURRENCY`, `TASK_TIMEOUT_SECONDS` | 4, 180 | Worker pool size, per-task limit |
 | `ADMIN_API_KEY` | – | Admin password for control actions; required in production |

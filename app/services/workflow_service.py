@@ -127,9 +127,21 @@ async def create_workflow(session: AsyncSession, data: WorkflowCreate) -> Workfl
     context = dict(data.context)
     if data.run and data.constraints:  # kept for the engine's background planner
         context["plan_constraints"] = data.constraints.model_dump(exclude_none=True)
+    from app.governance import access
+    from app.governance.principal import current
+
+    caller = current()
+    if data.memory is not None:  # Part 11: a team's memory lives under the team's namespace prefix
+        data = data.model_copy(update={"memory": data.memory.model_copy(
+            update={"namespace": access.memory_namespace(data.memory.namespace, caller)})})
+    elif caller.team_id is not None:
+        from app.core.adaptive_spec import MemorySwitch
+
+        data = data.model_copy(update={"memory": MemorySwitch(namespace=access.memory_namespace("default", caller))})
     workflow = Workflow(
         id=uuid.uuid4(), name=data.name, goal=data.goal, context=context, run_requested=data.run,
         budget=data.budget.stored() if data.budget else None,
+        team_id=caller.team_id, created_by=caller.name if caller.kind == "user" else None,
     )
     tasks = build_tasks(workflow.id, data.tasks)
     workflow.tasks = tasks
@@ -192,7 +204,10 @@ async def list_workflows(
     offset: int = 0,
 ) -> tuple[list[Workflow], int]:
     """Return (page of workflows newest first, total matching count)."""
+    from app.governance.access import workflow_filters
+
     filters = [Workflow.status == status] if status is not None else []
+    filters += workflow_filters()
 
     total = (
         await session.execute(select(func.count()).select_from(Workflow).where(*filters))

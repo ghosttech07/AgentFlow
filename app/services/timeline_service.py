@@ -97,6 +97,8 @@ def describe(event_type: str, p: dict[str, Any]) -> str:
                              + (f", input changed: {sorted(p['input_changes'])}" if p.get("input_changes") else ""),
         "approval.rejected": f"{key} rejected{who} ({p.get('on_reject')}){why}",
         "approval.expired": f"Approval for {key} expired",
+        "approval.vote_recorded": f"{key}: approval {p.get('votes')} of {p.get('required')}{who}"
+                                  + (" (earlier votes reset: the content was edited)" if p.get("reset_earlier_votes") else ""),
         "workflow.budget_exceeded": f"Budget reached: {p.get('limit')}"
                                     + (" (estimated, before the call)" if p.get("estimated") else "")
                                     + f"; {(p.get('usage') or {}).get('llm_calls')} LLM calls, "

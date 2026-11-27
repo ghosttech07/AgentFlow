@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import Boolean, String, Text, func, text
+from sqlalchemy import Boolean, ForeignKey, String, Text, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.enums import WorkflowStatus
@@ -40,6 +40,9 @@ class Workflow(Base):
     run_requested: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
     # Part 8: {max_cost_usd?, max_tokens?, max_llm_calls?, max_duration_seconds?}; None = config defaults.
     budget: Mapped[dict[str, Any] | None] = mapped_column()
+    # Part 11: owning team (None = global / created before teams existed) and the user who created it.
+    team_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("teams.id", ondelete="SET NULL"), index=True)
+    created_by: Mapped[str | None] = mapped_column(String(64))
 
     created_at: Mapped[datetime] = mapped_column(
         default=utcnow, server_default=func.now(), index=True

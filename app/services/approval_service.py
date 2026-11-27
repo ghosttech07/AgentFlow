@@ -70,6 +70,110 @@ async def approved_task_ids(session: AsyncSession, workflow_id: uuid.UUID) -> se
     return set(rows.all())
 
 
+# ------------------------------------------------------------------------------ Part 11 governance
+
+
+async def team_name(session: AsyncSession, wf: Workflow) -> str | None:
+    if wf.team_id is None:
+        return None
+    from app.models.governance import Team
+
+    return await session.scalar(select(Team.name).where(Team.id == wf.team_id))
+
+
+async def _apply_policy(session: AsyncSession, wf: Workflow, approval: Approval, **ctx: Any) -> None:
+    """Stamp the policy outcome on a new approval: how many distinct approvers, which role, which rules."""
+    from app.governance.policy import get_policies
+
+    req = get_policies().evaluate(team=await team_name(session, wf), **ctx)
+    approval.required_approvals = req.approvals
+    approval.approver_role = req.approver_role
+    approval.policy_rules = req.rules
+    if req.rules:
+        approval.request_payload = {**(approval.request_payload or {}), "policy": {
+            "rules": req.rules, "required_approvals": req.approvals, "approver_role": req.approver_role}}
+
+
+def _voter(actor: str) -> str:
+    """The identity a vote counts for: a user is themselves; the admin key is ONE voter whatever actor it names."""
+    from app.governance.principal import current
+
+    p = current()
+    return p.name or actor if p.kind == "user" else ("admin_key" if p.kind == "admin_key" else actor)
+
+
+def _authorize(approval: Approval, wf: Workflow, actor: str, *, voting: bool) -> None:
+    """Safety floor 4-5: the approver role, one vote per person, no self-approval when two people are required."""
+    from app.core.errors import ForbiddenError
+    from app.governance.principal import current
+
+    p = current()
+    if approval.approver_role and not p.at_least(approval.approver_role):
+        raise ForbiddenError(f"This approval needs role {approval.approver_role} (yours: {p.role})")
+    if not voting or approval.required_approvals <= 1:
+        return
+    voter = _voter(actor)
+    if p.kind == "user" and wf.created_by and wf.created_by == p.name:
+        raise ForbiddenError("Four-eyes rule: the person who created this workflow cannot approve it")
+    if any(v.get("voter") == voter for v in approval.votes or []):
+        raise ConflictError(f"{voter} already approved; it needs {approval.required_approvals} different people")
+
+
+async def _record_vote(session: AsyncSession, approval: Approval, wf: Workflow, actor: str, comment: str | None,
+                       overrides: dict[str, Any]) -> bool:
+    """Add a vote. True = enough distinct approvers now. Edited content resets earlier votes (everyone approves
+    exactly what will run)."""
+    votes = list(approval.votes or [])
+    edited = any(v for v in overrides.values())
+    if edited and votes:
+        votes = []
+    votes.append({"voter": _voter(actor), "actor": actor, "at": utcnow().isoformat(), "comment": comment,
+                  **({"overrides": overrides} if edited else {})})
+    approval.votes = votes
+    done = len(votes) >= approval.required_approvals
+    if not done:
+        record_event(session, workflow_id=wf.id, task_id=approval.task_id, event_type=EventType.APPROVAL_VOTE_RECORDED,
+                     payload={"approval_id": str(approval.id), "actor": actor, "votes": len(votes),
+                              "task_key": (approval.request_payload or {}).get("task_key"),
+                              "required": approval.required_approvals, "reset_earlier_votes": edited and len(votes) == 1,
+                              "policy_rules": approval.policy_rules})
+    return done
+
+
+async def _recheck_edited_call(session: AsyncSession, wf: Workflow, task: Task, approval: Approval,
+                               overrides: dict[str, Any]) -> None:
+    """The approver's edited arguments go through the policy again: a deny refuses the edit; a stricter rule raises
+    the number of approvers / the role, and earlier votes no longer count (they approved different content)."""
+    from app.core.errors import ForbiddenError
+    from app.governance.policy import get_policies, recipients_of
+
+    payload = approval.request_payload or {}
+    final = {**(payload.get("arguments") or {}), **overrides}
+    req = get_policies().evaluate(scope="tool", team=await team_name(session, wf), agent_type=task.agent_type,
+                                  task_key=task.base_key or task.key, tool=payload.get("tool"),
+                                  side_effect=payload.get("side_effect"), recipients=recipients_of(final))
+    if req.deny:
+        await session.rollback()
+        raise ForbiddenError(f"These arguments are denied by policy ({', '.join(req.rules)})")
+    from app.governance.principal import ROLE_RANK
+
+    stricter_role = req.approver_role and (approval.approver_role is None
+                                           or ROLE_RANK[req.approver_role] > ROLE_RANK[approval.approver_role])
+    if req.approvals > approval.required_approvals or stricter_role:
+        approval.required_approvals = max(approval.required_approvals, req.approvals)
+        if stricter_role:
+            approval.approver_role = req.approver_role
+        approval.policy_rules = sorted(set(approval.policy_rules or []) | set(req.rules))
+        approval.votes = []
+        _authorize(approval, wf, _voter_name(), voting=True)  # the editor must still be allowed under the new rule
+
+
+def _voter_name() -> str:
+    from app.governance.principal import current
+
+    return current().name or "admin"
+
+
 async def request_approval(session: AsyncSession, wf: Workflow, task: Task, settings: Settings) -> Approval:
     """READY gated task -> AWAITING_APPROVAL + a pending approval (event approval.requested)."""
     now = utcnow()
@@ -79,6 +183,8 @@ async def request_approval(session: AsyncSession, wf: Workflow, task: Task, sett
         expires_at=now + timedelta(hours=hours) if hours > 0 else None,
         request_payload=build_request_payload(wf, task),
     )
+    await _apply_policy(session, wf, approval, scope="task", agent_type=task.agent_type,
+                        task_key=task.base_key or task.key)
     session.add(approval)
     await transition_task(
         session, task, TaskStatus.AWAITING_APPROVAL, event_type=EventType.APPROVAL_REQUESTED,
@@ -102,6 +208,11 @@ async def request_tool_approval(session: AsyncSession, wf: Workflow, task: Task,
         request_payload={**payload, "workflow_goal": wf.goal, "task_key": task.key, "task_name": task.name,
                          "agent_type": task.agent_type},
     )
+    from app.governance.policy import recipients_of
+
+    await _apply_policy(session, wf, approval, scope="tool", agent_type=task.agent_type,
+                        task_key=task.base_key or task.key, tool=payload.get("tool"), side_effect=payload.get("side_effect"),
+                        recipients=recipients_of(payload.get("arguments") or {}))
     session.add(approval)
     await session.flush()
     call = await session.get(ToolCall, tool_call_id)
@@ -241,6 +352,10 @@ async def list_approvals(
         stmt = stmt.where(Approval.status == status)
     if workflow_id:
         stmt = stmt.where(Approval.workflow_id == workflow_id)
+    from app.governance.access import workflow_filters
+
+    if team := workflow_filters():  # Part 11: only the caller's team
+        stmt = stmt.join(Workflow, Workflow.id == Approval.workflow_id).where(*team)
     return list((await session.scalars(stmt)).all())
 
 
@@ -328,6 +443,21 @@ async def approve(
     allow_recipient_override: bool = False, confirm_duplicate: bool = False, extra_iterations: int | None = None,
 ) -> Approval:
     approval, wf, task = await _lock_pending(session, approval_id)
+    _authorize(approval, wf, actor, voting=True)
+    if approval.kind == "tool_call" and arguments_overrides:
+        await _recheck_edited_call(session, wf, task, approval, arguments_overrides)
+    if approval.required_approvals > 1:
+        given = {"input_overrides": input_overrides, "arguments_overrides": arguments_overrides,
+                 "allow_recipient_override": allow_recipient_override}
+        if not await _record_vote(session, approval, wf, actor, comment, given):
+            await session.commit()
+            logger.info("approval.vote approval=%s actor=%s votes=%d/%d", approval.id, actor, len(approval.votes),
+                        approval.required_approvals)
+            return approval
+        first = (approval.votes or [{}])[0].get("overrides") or {}  # the content everyone approved
+        input_overrides = first.get("input_overrides") or input_overrides
+        arguments_overrides = first.get("arguments_overrides") or arguments_overrides
+        allow_recipient_override = bool(first.get("allow_recipient_override") or allow_recipient_override)
     if approval.task_id is None:
         return await _decide_workflow_level(session, approval, wf, approved=True, actor=actor, comment=comment,
                                             extra_iterations=extra_iterations)
@@ -415,6 +545,7 @@ async def reject(
     session: AsyncSession, approval_id: uuid.UUID, *, actor: str, reason: str, on_reject: str
 ) -> Approval:
     approval, wf, task = await _lock_pending(session, approval_id)
+    _authorize(approval, wf, actor, voting=False)  # one eligible veto rejects (floor 6)
     if approval.task_id is None:
         return await _decide_workflow_level(session, approval, wf, approved=False, actor=actor, comment=reason)
     if approval.kind == "tool_call" and on_reject not in ("inform_agent", "fail_task"):

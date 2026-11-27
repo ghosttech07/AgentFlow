@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import ForeignKey, Index, String, Text, func, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, utcnow
@@ -46,6 +47,11 @@ class Approval(Base):
     # Part 9: "task" (a requires_approval task run) | "tool_call" (one proposed tool call inside a task).
     kind: Mapped[str] = mapped_column(String(16), default="task", server_default="task")
     tool_call_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("tool_calls.id", ondelete="SET NULL"))
+    # Part 11 policy: how many DISTINCT approvers, which minimum role, the votes so far, and why (rule names).
+    required_approvals: Mapped[int] = mapped_column(default=1, server_default=text("1"))
+    approver_role: Mapped[str | None] = mapped_column(String(16))
+    votes: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list, server_default=text("'[]'::jsonb"))
+    policy_rules: Mapped[list[str]] = mapped_column(JSONB, default=list, server_default=text("'[]'::jsonb"))
 
     workflow: Mapped[Workflow] = relationship(back_populates="approvals")
 

@@ -109,6 +109,7 @@ class Settings(BaseSettings):
 
     # Tools + safe actions (Part 9). No tools.yaml = no agent has tools (Part 8 behaviour).
     tools_config_path: Path = PROJECT_ROOT / "config" / "tools.yaml"
+    policies_config_path: Path = PROJECT_ROOT / "config" / "policies.yaml"  # Part 11 (missing = no extra rules)
     max_tool_steps: int = Field(default=8, ge=1, le=50)
     max_tool_output_chars: int = Field(default=4000, ge=200)
     tool_loop_timeout_seconds: float = Field(default=900.0, gt=0)  # replaces TASK_TIMEOUT for tool agents

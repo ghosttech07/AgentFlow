@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
+from app.api.auth import require_creator
 from app.llm import LLMClient, get_llm_client
 from app.schemas.common import ErrorResponse
 from app.schemas.plan import PlanPreviewRequest, PlanPreviewResponse
 from app.services import planning_service
 
-router = APIRouter(prefix="/plans", tags=["plans"])
+router = APIRouter(prefix="/plans", tags=["plans"], dependencies=[Depends(require_creator)])
 
 
 @router.post(

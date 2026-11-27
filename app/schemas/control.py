@@ -35,7 +35,7 @@ class CancelRequest(BaseModel):
 
 class ApproveRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    actor: str = Field(min_length=1, max_length=255)
+    actor: str | None = Field(default=None, min_length=1, max_length=255, description="Ignored for a signed-in user (their name is used).")
     comment: str | None = Field(default=None, max_length=2000)
     input_overrides: dict[str, Any] | None = Field(
         default=None, description="Shallow-merged into the task input before it runs.")
@@ -56,7 +56,7 @@ class CheckRequest(BaseModel):
 
 class RejectRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    actor: str = Field(min_length=1, max_length=255)
+    actor: str | None = Field(default=None, min_length=1, max_length=255, description="Ignored for a signed-in user (their name is used).")
     reason: str = Field(min_length=1, max_length=2000)
     # Task approvals: fail_workflow | skip_task. Tool-call approvals: inform_agent | fail_task.
     on_reject: Literal["fail_workflow", "skip_task", "inform_agent", "fail_task"] | None = None
@@ -79,3 +79,8 @@ class ApprovalRead(BaseModel):
     on_reject: str | None
     kind: str = "task"
     tool_call_id: uuid.UUID | None = None
+    # Part 11: N distinct approvers (policy), minimum role, votes so far, the rules that asked for it
+    required_approvals: int = 1
+    approver_role: str | None = None
+    votes: list[dict[str, Any]] = []
+    policy_rules: list[str] = []

@@ -329,3 +329,26 @@ A tool attempt that holds private data must not read a URL that could carry that
 - **Any other URL, a URL over the length cap, or a URL containing private tokens** is held for a human approval
   with a "possible data exfiltration" warning.
 - **`http_request` GET with a body** counts as an `external_write`.
+
+## Governance (Part 11)
+
+```mermaid
+flowchart LR
+  K[X-API-Key] --> P{get_principal}
+  P -->|ADMIN_API_KEY| A[admin_key: global admin]
+  P -->|sha256 lookup| U[user: role + team]
+  P -->|no users yet| O[open: legacy mode]
+  U --> R[require_role] --> S[scoped: another team's object = 404]
+  S --> SV[services: list filters by team, actor = user]
+  SV --> AP[approval_service: policy stamps N approvers + role; votes; four eyes]
+  SV --> TL[tool loop: policy deny / require]
+  POL[(policies.yaml)] --> AP & TL & G[scheduler gate: policy can require a task approval]
+  F[SAFETY FLOOR in code] -.never overridden.-> AP & TL & G
+```
+
+| Guarantee | Code |
+|---|---|
+| Every action has a real actor | `api/auth.get_principal`, `Principal.actor` |
+| Teams can't see each other | `governance/access.py` (router dependency + list filters + memory namespace) |
+| Policies can only tighten | `governance/policy.py` (`require_approval: Literal[True]`, strictest rule wins) |
+| N distinct approvers, four eyes | `approval_service._authorize`, `_record_vote` |

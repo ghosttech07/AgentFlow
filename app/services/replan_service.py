@@ -162,16 +162,24 @@ async def run_job(session_factory: async_sessionmaker[AsyncSession], llm: LLMCli
         if not errors:
             patch = candidate
             break
-    async with session_factory() as session:
-        wf = await session.scalar(select(Workflow).where(Workflow.id == workflow_id).with_for_update())
-        if wf is None or wf.status != WorkflowStatus.REPLANNING:
-            return  # cancelled meanwhile: the patch is discarded
-        if patch is None:
-            await _fail(session, wf, errors)
+    try:
+        async with session_factory() as session:
+            wf = await session.scalar(select(Workflow).where(Workflow.id == workflow_id).with_for_update())
+            if wf is None or wf.status != WorkflowStatus.REPLANNING:
+                return  # cancelled meanwhile: the patch is discarded
+            if patch is None:
+                await _fail(session, wf, errors)
+                await session.commit()
+                return
+            await propose_or_apply(session, wf, patch, created_by="planner", settings=settings)
             await session.commit()
-            return
-        await propose_or_apply(session, wf, patch, created_by="planner", settings=settings)
-        await session.commit()
+    except Exception as exc:  # the graph changed under the patch (or a bug): fail the re-plan, never hang in "planning"
+        logger.exception("workflow.replan_apply_failed id=%s", workflow_id)
+        async with session_factory() as session:
+            wf = await session.scalar(select(Workflow).where(Workflow.id == workflow_id).with_for_update())
+            if wf is not None and wf.status == WorkflowStatus.REPLANNING:
+                await _fail(session, wf, [f"applying the patch failed: {type(exc).__name__}: {exc}"])
+                await session.commit()
 
 
 def _needs_approval(wf: Workflow, patch: PlanPatch, tasks: list[Task], settings: Settings) -> list[str]:

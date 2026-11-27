@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.auth import require_creator, require_viewer
 from app.config import Settings, get_settings
 from app.db.session import get_session
 from app.llm import LLMClient, get_llm_client
@@ -23,7 +24,7 @@ class AskRequest(BaseModel):
     question: str = Field(min_length=3, max_length=1000)
 
 
-@router.post("/ask", responses={502: {"model": ErrorResponse}, 503: {"model": ErrorResponse},
+@router.post("/ask", dependencies=[Depends(require_creator)], responses={502: {"model": ErrorResponse}, 503: {"model": ErrorResponse},
                                 429: {"model": ErrorResponse, "description": "Model quota exhausted"}})
 async def ask(
     body: AskRequest, llm: LLMClient = Depends(get_llm_client), settings: Settings = Depends(get_settings),
@@ -35,13 +36,13 @@ async def ask(
     return await history_service.ask_and_save(session, body.question.strip(), llm, settings)
 
 
-@router.get("/asks/{ask_id}", responses={404: {"model": ErrorResponse}})
+@router.get("/asks/{ask_id}", dependencies=[Depends(require_viewer)], responses={404: {"model": ErrorResponse}})
 async def get_ask(ask_id: uuid.UUID, session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
     """A saved question with its answer (or error)."""
     return await history_service.get_ask(session, ask_id)
 
 
-@router.get("/history")
+@router.get("/history", dependencies=[Depends(require_viewer)])
 async def history(limit: int = Query(default=50, ge=1, le=200),
                   session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
     """Questions (Quick Ask) and research (workflows), newest first."""

@@ -111,6 +111,23 @@ keeps both guarantees:
 4. **Risky patches need a human.** A patch that is sensitive or too big needs an approval.
 5. **The patch is applied in one locked transaction.** It applies completely or not at all, even across a crash.
 
+**How do you stop one team from seeing another team's data?**
+Every workflow belongs to the team of the user who created it. Every read and action checks the caller's team.
+Another team's workflow or approval answers 404, so its existence is not revealed. Memory lives under a namespace
+per team, and lists are filtered in SQL.
+
+**Can a policy file switch off an approval?**
+No. Policies can only add requirements. A file that says `require_approval: false` is refused at startup. A
+safety floor in code always applies:
+- a publish step needs an approval;
+- an outside write from a tainted task needs an approval;
+- only approvers can approve;
+- when two approvers are needed, the person who created the workflow can't be one of them.
+
+**What if someone approves twice, or edits the content after one approval?**
+Each person counts once, and a second vote gets 409. An edit clears the earlier votes, so every approver signs off
+on exactly what will run.
+
 **Why PostgreSQL instead of Redis, Kafka or Temporal?**
 One system, transactional: a status change and its event commit together, and claiming work with
 `FOR UPDATE SKIP LOCKED` is safe across processes. AI steps take seconds, so the database is never the
@@ -132,4 +149,4 @@ models fall through to the next entry, with a circuit breaker per model; the mod
 fallback are recorded on the task.
 
 **What isn't done yet?**
-See "Limitations" in the README: user accounts and roles (Part 11), load testing (Part 14), and live tests for the Anthropic and OpenAI adapters (no keys).
+See "Limitations" in the README: load testing (Part 14), and live tests for the Anthropic and OpenAI adapters (no keys).

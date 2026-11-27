@@ -190,8 +190,8 @@ async def test_human_plan_patch_while_paused(client: AsyncClient, make_engine) -
 
 async def test_crash_during_replanning_recovers(client: AsyncClient, make_engine, session_factory) -> None:  # noqa: ANN001
     wf = await make(client)
-    await make_engine(FakeLLMClient({ResearchOutput: OK}, scripts=[FakeScript(
-        match=match("research_b"), error=LLMPermanentError("x"))])).tick()  # nothing to see yet
+    # No engine runs before the simulated crash: a ticked-but-not-awaited engine would leave workers racing the
+    # second engine (two engines on one DB), which made this test flaky in a 5x run.
     async with session_factory() as s:  # simulate: the planner job died while state was "planning"
         w = await s.get(Workflow, uuid.UUID(wf))
         w.status = "REPLANNING"

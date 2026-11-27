@@ -1,0 +1,24 @@
+# AgentFlow policies (Part 11). Copy to config/policies.yaml (POLICIES_CONFIG_PATH). Validated at startup: a bad
+# file stops the app. Rules can only ADD requirements; the strictest matching rule wins.
+#
+# when (all keys must match): agent_type, task_key (glob), tool, team, side_effect, recipient_not_in_domains
+# effects: require_approval (true only), approvals (N different people), approver_role (approver|admin), deny (tools)
+#
+# Safety floor (in code, cannot be switched off here): sensitive agents always need an approval; a tainted task's
+# outside write always needs an approval; only approvers/admins approve; with 2+ approvers each person votes once
+# and the workflow's creator cannot vote; one rejection rejects.
+
+rules:
+  - name: publish_needs_two_approvers
+    when: {agent_type: publisher}
+    approvals: 2
+    approver_role: approver
+
+  - name: email_outside_the_company
+    when: {tool: send_email, recipient_not_in_domains: [example.com]}
+    require_approval: true
+    approver_role: approver
+
+  - name: marketing_cannot_call_webhooks
+    when: {tool: webhook_post, team: marketing}
+    deny: true

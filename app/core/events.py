@@ -65,6 +65,7 @@ class EventType(StrEnum):
     APPROVAL_APPROVED = "approval.approved"
     APPROVAL_REJECTED = "approval.rejected"
     APPROVAL_EXPIRED = "approval.expired"
+    APPROVAL_VOTE_RECORDED = "approval.vote_recorded"  # Part 11: one of several required approvers said yes
     # Cost control (Part 8)
     WORKFLOW_BUDGET_EXCEEDED = "workflow.budget_exceeded"
     WORKFLOW_BUDGET_UPDATED = "workflow.budget_updated"
