@@ -194,15 +194,14 @@ async def _set_tool_call(session: AsyncSession, approval: Approval, status: str,
             setattr(call, k, v)
 
 
-async def expire_due(session: AsyncSession, wf: Workflow, tasks: list[Task]) -> int:
+async def expire_due(session: AsyncSession, wf: Workflow, tasks: list[Task], *,
+                     workflow_level_only: bool = False) -> int:
     """Pending approvals past expires_at -> expired; their task FAILED (approval_expired)."""
-    rows = (
-        await session.scalars(
-            select(Approval).where(Approval.workflow_id == wf.id, Approval.status == "pending",
-                                   Approval.expires_at.is_not(None), Approval.expires_at <= utcnow())
-            .with_for_update()
-        )
-    ).all()
+    stmt = select(Approval).where(Approval.workflow_id == wf.id, Approval.status == "pending",
+                                  Approval.expires_at.is_not(None), Approval.expires_at <= utcnow())
+    if workflow_level_only:
+        stmt = stmt.where(Approval.task_id.is_(None))
+    rows = (await session.scalars(stmt.with_for_update())).all()
     by_id = {t.id: t for t in tasks}
     for a in rows:
         a.status, a.decided_at = "expired", utcnow()
@@ -212,7 +211,9 @@ async def expire_due(session: AsyncSession, wf: Workflow, tasks: list[Task]) -> 
             if a.kind == "plan_patch":
                 from app.services import replan_service
 
+                # the re-plan's own failure rule decides: automatic trigger -> FAILED, human -> back to before
                 await replan_service.decide_patch(session, wf, a, approved=False, actor="expiry")
+                continue
             if wf.status in _FAILABLE:
                 wf.error = f"{a.kind} approval {a.id} expired without a decision"
                 await transition_workflow(session, wf, WorkflowStatus.FAILED, event_type=EventType.WORKFLOW_FAILED,

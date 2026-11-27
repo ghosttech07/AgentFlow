@@ -46,6 +46,9 @@ def _private(task: Task) -> bool:
     return bool(((task.metrics or {}).get("tools") or {}).get("private"))
 
 
+is_private = _private
+
+
 async def write_from_task(session: AsyncSession, wf: Workflow, task: Task, settings: Settings | None = None) -> int:
     """Facts from a succeeded researcher (no commit). Returns how many were stored."""
     settings = settings or get_settings()
@@ -73,7 +76,8 @@ async def write_from_task(session: AsyncSession, wf: Workflow, task: Task, setti
 
 
 async def write_lesson(session: AsyncSession, wf: Workflow, reviews: list[dict[str, Any]],
-                       settings: Settings | None = None) -> bool:
+                       settings: Settings | None = None, *, tainted: bool = False, private: bool = False) -> bool:
+    """A lesson inherits taint / privacy from the loop tasks it was learned from (review text can echo a page)."""
     settings = settings or get_settings()
     if len(reviews) < 2 or not _switch(wf, "write", settings):
         return False
@@ -84,6 +88,7 @@ async def write_lesson(session: AsyncSession, wf: Workflow, reviews: list[dict[s
     session.add(Memory(namespace=_namespace(wf), kind="lesson",
                        content=f"First drafts for goals like '{wf.goal[:120]}' often missed: " + "; ".join(issues[:5]),
                        data={"iterations": len(reviews)}, source_workflow_id=wf.id, confidence="medium",
+                       tainted=tainted, private=private,
                        expires_at=utcnow() + timedelta(days=settings.memory_lesson_ttl_days)))
     return True
 
@@ -92,6 +97,10 @@ async def write_artifact_summary(session: AsyncSession, wf: Workflow, settings: 
     settings = settings or get_settings()
     if not _switch(wf, "write", settings) or not wf.result:
         return False
+    tasks = list(await session.scalars(select(Task).where(Task.workflow_id == wf.id,
+                                                          Task.status == "SUCCEEDED")))
+    tainted = any(t.tainted for t in tasks)  # the summary is built from these outputs: it carries their flags
+    private = any(_private(t) for t in tasks)
     parts = []
     for key, out in (wf.result.get("final_outputs") or {}).items():
         if isinstance(out, dict):
@@ -99,6 +108,7 @@ async def write_artifact_summary(session: AsyncSession, wf: Workflow, settings: 
     session.add(Memory(namespace=_namespace(wf), kind="artifact_summary",
                        content=f"{wf.goal[:200]} -> {'; '.join(parts)[:400]}",
                        data={"summary": wf.result.get("summary")}, source_workflow_id=wf.id, confidence="medium",
+                       tainted=tainted, private=private,
                        expires_at=utcnow() + timedelta(days=settings.memory_lesson_ttl_days)))
     return True
 

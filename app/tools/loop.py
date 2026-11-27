@@ -173,7 +173,10 @@ class ToolLoop:
         # Exfiltration guard (Part 10): what this attempt has seen as data, and whether it holds private data.
         self.private = rt.private_context
         self.private_tokens: set[str] = set()
-        self.provenance: set[str] = urls_in(agent_input.task_input) | urls_in(agent_input.dependency_outputs)
+        # Links in a TAINTED upstream output may have been planted by a page (two-step exfiltration): they do not
+        # count as trusted provenance; only untainted upstream outputs and the task input do.
+        clean_upstream = {k: v for k, v in (agent_input.dependency_outputs or {}).items() if k not in rt.tainted_from}
+        self.provenance: set[str] = urls_in(agent_input.task_input) | urls_in(clean_upstream)
         # Memory facts were verified when stored: citing them is allowed, and their links count as seen.
         self.report.seen_urls |= set(rt.memory_sources)
         self.provenance |= {normalize_url(u) for u in rt.memory_sources}

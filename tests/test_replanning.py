@@ -160,7 +160,6 @@ async def test_plan_patch_approval_expires(client: AsyncClient, make_engine, ses
     await engine.run_until_idle()
     async with session_factory() as s:
         await s.execute(update(Approval).where(Approval.workflow_id == uuid.UUID(wf)).values(expires_at=utcnow()))
-        await s.execute(update(Workflow).where(Workflow.id == uuid.UUID(wf)).values(status="RUNNING"))
         await s.commit()
     await engine.run_until_idle()
     assert (await detail(client, wf))["status"] == "FAILED"

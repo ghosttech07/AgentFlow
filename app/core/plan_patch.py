@@ -54,12 +54,20 @@ def validate_patch(patch: PlanPatch, tasks: Sequence[Any], valid_agent_types: It
         elif status[key] not in CANCELLABLE or (getattr(by_key[key], "attempt_count", 0) or 0) > 0:
             add("cancel_not_allowed", f"Cannot cancel '{key}' ({status[key]}): only tasks that never started "
                 "(PENDING/READY) may be cancelled; finished, running or approved work is never undone", key)
+        elif getattr(by_key[key], "loop_name", None):
+            add("cancel_loop_task", f"Cannot cancel '{key}': it is part of loop '{by_key[key].loop_name}'", key)
     for rw in patch.rewire:
         if rw.from_failed not in by_key:
             add("rewire_unknown", f"Cannot rewire unknown task '{rw.from_failed}'", rw.from_failed)
         elif status[rw.from_failed] != "FAILED":
             add("rewire_not_failed", f"Only a FAILED task's dependents can be rewired ('{rw.from_failed}' is "
                 f"{status[rw.from_failed]})", rw.from_failed)
+        else:
+            started = sorted(t.key for t in tasks if any(d.key == rw.from_failed for d in t.dependencies)
+                             and status[t.key] not in CANCELLABLE)
+            if started:  # a dependent that already ran (tolerated failure) or runs now must not be re-pointed
+                add("rewire_dependent_started", f"Cannot rewire '{rw.from_failed}': its dependents "
+                    f"{', '.join(started)} already started; add the replacement as a new task instead", rw.from_failed)
         if rw.to_replacement not in new_keys:
             add("rewire_target", f"Rewire target '{rw.to_replacement}' must be a task added by this patch",
                 rw.to_replacement)

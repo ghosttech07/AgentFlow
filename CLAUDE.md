@@ -28,7 +28,7 @@ reliability, cost limits and safety; humans approve under policy; every step is 
 8. [x] **Multi-provider AI + cost control**: Gemini, Claude, OpenAI, Ollama; cross-provider
    fallback; cost tracking; budgets; persisted quotas (DONE)
 9. [x] **Tools + safe actions**: tool registry (web, HTTP APIs, DB, files, email), side-effect rules, sandboxing (DONE)
-10. [ ] **Adaptive workflows**: feedback loops, conditional branches, bounded re-planning, memory
+10. [x] **Adaptive workflows**: feedback loops, conditional branches, bounded re-planning, memory (DONE)
 11. [ ] **Policy engine + users/roles**: policy-as-code, RBAC, multi-approver
 12. [ ] **Trust layer**: tamper-evident hash-chained audit, reproducibility, PII redaction, compliance export
 13. [ ] **Quality engine**: evals, quality gates, replay / what-if runs
@@ -84,6 +84,8 @@ Same rule: build one part, test it, then wait for the next part's prompt.
   110-170 s/run + timeouts; qwen3.5:4b researcher + analyst used tools correctly, 0 invalid calls (1 run/role).
   Recommended routing in config/models.example.yaml: research/analysis on ollama:qwen3.5:4b, planner/writer/
   communicator on Gemini. Next: Part 10 (adaptive workflows). Open for the user: Docker "full" profile, CI + ruff.
+- Part 10 done (2026-11-27): T1-T14 + final-review fix pass (I-1..I-7 + loop final_outputs, regression tests in
+  tests/test_p10_review_fixes.py); adaptive_demo 12/12 PASS; see the Part 10 section. Next: Part 11 (governance).
 - Docker Desktop on this machine: if `docker` is not on PATH in a fresh shell, it lives at
   `C:\Users\DELL\AppData\Local\Programs\DockerDesktop\resources\bin\docker.exe`.
 
@@ -131,6 +133,7 @@ scripts/crash_demo.py   Part 5 demo: crash the server mid-task, restart, verify 
 scripts/controls_demo.py Part 6 demo: pause/resume, approve, reject, cancel (fake LLM)
 scripts/budget_demo.py  Part 8 demo: budget pause -> PATCH -> resume -> COMPLETED (fake LLM)
 scripts/tools_demo.py   Part 9 demo: tools, approval with edits, crash after email (exactly one), injection blocked
+scripts/adaptive_demo.py Part 10 demo: loop 5 -> v2 -> 9, branches, re-plan, crash during v2, memory, exfil
 scripts/demo.py         runs every demo and prints one PASS/FAIL table
 scripts/setup_sample_data.py  read-only sample DB for sql_query (idempotent)
 scripts/local_model_check.py  Ollama models vs the tool action protocol (success / tool use / valid steps)
@@ -732,6 +735,102 @@ Clean answer engine (DESIGN.md): one question box with Quick answer / Deep resea
 ("not available yet"), server-side history sidebar (`GET /history`, `GET /asks/{id}`; Quick Ask answers are
 saved), technical status removed from the screen (cost/limits/activity in a closed Details section).
 
+## Adaptive workflows (Part 10)
+**The plan may change shape while it runs, only within limits that code sets and checks. Finished work is never undone, and the task
+graph stays a DAG at every moment.** Spec/plan: `docs/superpowers/specs|plans/2026-11-26-part10-adaptive*`.
+
+### Conditions, branches, joins
+- **Condition language** (`app/core/conditions.py`, AST whitelist, never `eval`):
+  - Applies to `run_if`, loop `until` / `best_by`, and `replan_if`.
+  - Names are task keys exposing `.output` / `.status`; functions len/lower/upper/min/max/abs/round/any/all.
+  - Limits: 300 chars, 80 nodes, depth 12, exponent 64, values ≤ 10,000 items (repetition is checked before it
+    allocates).
+  - Errors: ConditionSyntaxError at plan time; ConditionError (incl. MemoryError/RecursionError) at run time ->
+    `condition_error`, never a crash.
+  - Scope: run_if = its dependencies; replan_if = itself + dependencies; loop conditions = the loop's body only.
+- **Joins** (`app/core/joins.py`): `all_succeeded` (default) | `any_succeeded` | `all_done`.
+  - A FAILED task is tolerated when every dependent uses a tolerant join.
+  - The workflow then COMPLETES with `result.failed_branches` + event `workflow.completed_with_failed_branches`.
+  - `run_if` false -> SKIPPED, `skip_reason=condition_false`.
+
+### Loops = dynamic expansion (`graph_service.expand_loop`, `scheduler._advance_loops`)
+- **Plan format:** `loops: [{name, body (contiguous chain), until, max_iterations, on_exhausted:
+  continue_with_best|fail|ask_human, best_by?, feedback {from, to}}]`.
+  - State lives in `workflow.context.loops` (status open|awaiting_human|expand_pending|choose_best|done|exhausted).
+  - Body keys must be ≤ 46 chars (`LOOP_KEY_MAX`; the validator message says why, and the repair loop fixes it).
+  - Body tasks may not have `run_if`.
+- **Expansion** (`until` false, iteration allowed by max_iterations / max_iterations_total / the max_llm_calls
+  pre-check) inserts `<key>__v<n>` rows (base_key, iteration, loop_name):
+  - The feedback target gets `revision_feedback`; the writer outputs `changes_made`.
+  - Dependents of EVERY body task are rewired to the newest iteration.
+  - Expansion is idempotent (crash-safe).
+  - Downstream tasks wait while the loop is open (`_blocked_by_open_loop`).
+- **Ending a loop:**
+  - A dead body task (SKIPPED / CANCELLED / SUPERSEDED) -> `_exhausted` ("loop body did not finish").
+  - continue_with_best picks the best FINISHED iteration (best_by error -> latest finished; the reason is in the
+    event) and rewires dependents to it.
+  - ask_human -> a workflow-level `loop_exhausted` approval (task_id NULL; `extra_iterations` on approve).
+- **Results:** `final_outputs` reports the chosen iteration's task for a loop leaf. Lessons go to memory when a loop
+  ends after v2+.
+
+### Re-planning (`app/services/replan_service.py`, `app/core/plan_patch.py`)
+- **Triggers:**
+  - (a) a FAILED task when `context.adaptive.replan_on_failure` (planner plans; default False);
+  - (b) `replan_if` true on a succeeded task (checked once);
+  - (c) human `POST /workflows/{id}/replan` (any workflow, 202);
+  - plus `POST /workflows/{id}/plan-patch` (PAUSED only, a human's own patch).
+- **Flow:**
+  - `request` -> REPLANNING (`context.replan.state` requested -> planning -> proposed | applied | failed).
+  - The engine tick claims requested jobs; `run_job` asks the planner (patch mode, ≤2 repairs).
+- **`validate_patch`** checks the merged graph. It rejects:
+  - cancelling started, finished or loop tasks;
+  - rewiring a non-FAILED task, or one whose dependents already started (`rewire_dependent_started`);
+  - existing keys;
+  - more than REPLAN_MAX_NEW_TASKS new tasks.
+- **Approval:** a `plan_patch` approval (task_id NULL) is needed when the patch adds a sensitive step, adds more than
+  REPLAN_AUTO_APPROVE_MAX_TASKS tasks, or replaces a sensitive task.
+- **`apply`:** one transaction (new tasks, SUPERSEDED, rewired dependents, `plan_versions` applied), then back to the
+  previous status.
+- **Failure and expiry:** `_fail` -> automatic trigger -> FAILED; human trigger -> back to before. A plan_patch
+  expiry goes through decide_patch/_fail and is checked for REPLANNING workflows each tick
+  (`scheduler.expire_replanning_approvals`).
+- **Limits and recovery:** MAX_REPLANS (budget `max_replans`). Recovery: planning|applying -> requested.
+- **Endpoints:** `GET /workflows/{id}/plan-versions`.
+
+### Memory (`app/services/memory_service.py`, table `memories`, FTS tsvector + GIN)
+- **Kinds:** fact (researcher with verified sources, 30 d), lesson (loop, 180 d), artifact_summary (180 d).
+- **Flags:** `tainted` / `private` come from the contributing tasks (lessons and summaries too).
+- **Retrieval:** `search` = OR tsquery ranked relevance × recency × confidence, pinned first, namespace-scoped
+  (`memory: {read, write, namespace}` per workflow).
+- **In the prompt:** `context.build_agent_input` adds PRIOR KNOWLEDGE (tainted -> untrusted tags), and
+  memory_tainted / memory_private flow into the ToolRuntime. The researcher may answer `from_memory`.
+- **API:** `/memories` (GET q/kind/namespace, GET id, pin, DELETE soft, purge-expired).
+
+### Exfiltration guard for reads (`app/tools/exfil.py`)
+- **Scope:** a private attempt (SQL rows, private memory) reading a URL with web_fetch / http_request GET.
+- **Trusted provenance:** search results, fetched pages, the task input, UNTAINTED upstream outputs, memory sources,
+  the read allowlist.
+- **Otherwise:** URLs outside that set, too long, or carrying private tokens -> held for a human ("possible data
+  exfiltration").
+- **http_request GET with a body** = external_write.
+
+### Other Part 10 pieces
+- **Approvals:** duplicate-send needs `confirm_duplicate` (409 otherwise); approve bodies are strict (unknown field ->
+  422); `POST /approvals/{id}/check`.
+- **Logging:** `X-Request-ID` middleware (`rid=` in logs).
+- **Dashboard:** plan history, Re-plan button, plan_patch / loop_exhausted cards, skip reasons, failed-branch badge,
+  Memory page (`#memory`).
+- **Timeline counts:** loop_iterations, replans, condition_skips, failed_branches, memory_hits,
+  llm_calls_saved_by_memory.
+- **Demo:** `python scripts/adaptive_demo.py` (fake, 12 checks): loop 5 -> v2 -> 9, branches, re-plan SUPERSEDED, crash
+  during v2 -> one v2, memory run cheaper, exfil held.
+- **Config:** MAX_LOOP_ITERATIONS (5), MAX_REPLANS (2), REPLAN_MAX_NEW_TASKS (5), REPLAN_AUTO_APPROVE_MAX_TASKS (2),
+  MEMORY_ENABLED, MEMORY_TOP_K (5), MEMORY_FACT_TTL_DAYS (30), MEMORY_LESSON_TTL_DAYS (180).
+- **Migration 0008:** statuses REPLANNING / SUPERSEDED, task loop/branch columns, nullable approvals.task_id,
+  plan_versions, memories.
+- **Long local test runs:** wrap them in `python scripts/ci/keep_awake.py -- <cmd>`. Windows Modern Standby paused a
+  run for 6 h and its 60 s timers then expired.
+
 ## Coding conventions
 - **Async everywhere** (routes, services, DB access). No sync DB calls in app code.
 - **Thin routes**: parse/validate → call a service → convert to schema. No logic in routes.
@@ -765,6 +864,7 @@ python scripts/controls_demo.py             # Part 6: pause/resume, approve, rej
 python scripts/budget_demo.py               # Part 8: budget pause + PATCH + resume (fake LLM)
 python scripts/setup_sample_data.py         # Part 9: sample database + read-only role for sql_query
 python scripts/tools_demo.py                # Part 9: tools + approvals + crash after email + injection (fake)
+python scripts/adaptive_demo.py             # Part 10: loops, branches, re-plan, crash during v2, memory, exfil (fake)
 python scripts/demo.py                      # every demo, one PASS/FAIL table
 python scripts/list_provider_models.py      # Part 8: models your keys / local Ollama offer
 pytest -m live_ollama -s                    # Part 8: free local-model live tests

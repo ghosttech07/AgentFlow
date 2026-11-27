@@ -98,6 +98,26 @@ async def schedule_running_workflows(
     for workflow_id in ids:
         async with session_factory() as session:
             changes += await schedule_workflow(session, workflow_id, settings)
+    changes += await expire_replanning_approvals(session_factory)
+    return changes
+
+
+async def expire_replanning_approvals(session_factory: async_sessionmaker[AsyncSession]) -> int:
+    """A REPLANNING workflow is not scheduled, but its proposed plan_patch approval must still expire."""
+    async with session_factory() as session:
+        ids = (await session.scalars(select(Workflow.id).where(Workflow.status == WorkflowStatus.REPLANNING))).all()
+    changes = 0
+    for workflow_id in ids:
+        async with session_factory() as session:
+            wf = await session.scalar(select(Workflow).where(Workflow.id == workflow_id,
+                                                             Workflow.status == WorkflowStatus.REPLANNING)
+                                      .with_for_update(skip_locked=True))
+            if wf is None or ((wf.context or {}).get("replan") or {}).get("state") != "proposed":
+                await session.rollback()
+                continue
+            n = await approval_service.expire_due(session, wf, [], workflow_level_only=True)
+            await session.commit()
+            changes += n
     return changes
 
 
@@ -244,6 +264,19 @@ async def schedule_workflow(
 
 
 OPEN_LOOP = ("open", "awaiting_human", "expand_pending", "choose_best")
+BODY_DEAD = (TaskStatus.SKIPPED, TaskStatus.CANCELLED, TaskStatus.SUPERSEDED)
+
+
+def _finished_iterations(tasks: list[Task], spec: Any, k: int) -> list[int]:
+    """Iterations 1..k whose whole body SUCCEEDED (only those can be chosen as the result)."""
+    from app.services import graph_service
+
+    done = []
+    for i in range(1, k + 1):
+        body = graph_service.iteration_tasks(tasks, spec.name, i)
+        if len(body) == len(spec.body) and all(t.status == TaskStatus.SUCCEEDED for t in body.values()):
+            done.append(i)
+    return done
 
 
 def _loops_open(wf: Workflow, *statuses: str) -> bool:
@@ -279,6 +312,12 @@ async def _advance_loops(session: AsyncSession, wf: Workflow, tasks: list[Task],
         if status != "open":
             continue
         current = graph_service.iteration_tasks(tasks, name, k)
+        dead = [t for t in current.values() if t.status in BODY_DEAD]
+        if dead:  # a skipped / cancelled / superseded body task can never finish this iteration: decide now
+            await _exhausted(session, wf, tasks, spec, k, "loop body did not finish: " + ", ".join(
+                f"{t.key} {t.status}" for t in dead))
+            changes += 1
+            continue
         last = current.get(spec.body[-1])
         if last is None or last.status != TaskStatus.SUCCEEDED or len(current) != len(spec.body):
             continue
@@ -336,7 +375,9 @@ async def _lesson(session: AsyncSession, wf: Workflow, tasks: list[Task], spec: 
     for i in range(1, k + 1):
         reviewer = graph_service.iteration_tasks(tasks, spec.name, i).get(spec.feedback.from_)
         reviews.append((reviewer.output if reviewer else None) or {})
-    await memory_service.write_lesson(session, wf, reviews)
+    body = [t for t in tasks if t.loop_name == spec.name]
+    await memory_service.write_lesson(session, wf, reviews, tainted=any(t.tainted for t in body),
+                                      private=any(memory_service.is_private(t) for t in body))
 
 
 def _set_loop(wf: Workflow, name: str, **values: Any) -> None:
@@ -369,13 +410,15 @@ async def _choose_best(session: AsyncSession, wf: Workflow, tasks: list[Task], s
 
     expr = spec.best_by or f"{spec.feedback.from_}.output.score"
     scores: dict[int, Any] = {}
+    finished = _finished_iterations(tasks, spec, k)
+    latest_finished = finished[-1] if finished else k
     try:
         cond = parse_condition(expr)
-        for i in range(1, k + 1):
+        for i in finished:
             scores[i] = cond.value(graph_service.iteration_outputs(tasks, spec.name, i))
-        chosen = max(scores, key=lambda i: (scores[i], i))
+        chosen = max(scores, key=lambda i: (scores[i], i)) if scores else latest_finished
     except (ConditionError, ConditionSyntaxError, TypeError) as exc:
-        chosen = k
+        chosen = latest_finished
         reason = f"{reason}; best_by could not be evaluated ({exc}), using the latest finished iteration"
     if chosen != k:
         latest = graph_service.iteration_tasks(tasks, spec.name, k)
@@ -474,6 +517,20 @@ def _chosen(wf: Workflow, t: Task) -> bool:
     return (t.iteration or 1) == (state.get("chosen_iteration") or state.get("iteration", 1))
 
 
+def _chosen_version(wf: Workflow, tasks: list[Task], t: Task) -> Task | None:
+    """A leaf from a loop body stands for its loop: report the CHOSEN iteration's task with the same base key
+    (continue_with_best may pick an earlier draft at the end of the plan)."""
+    if _chosen(wf, t):
+        return t
+    from app.services import graph_service
+
+    state = (wf.context or {}).get("loops", {}).get(t.loop_name, {})
+    chosen = state.get("chosen_iteration")
+    if not chosen:
+        return None
+    return graph_service.iteration_tasks(tasks, t.loop_name, int(chosen)).get(t.base_key or t.key)
+
+
 async def _complete(session: AsyncSession, wf: Workflow, tasks: list[Task]) -> None:
     nodes = [TaskNode(key=t.key, agent_type=t.agent_type, depends_on=[d.key for d in t.dependencies])
              for t in tasks]
@@ -484,9 +541,13 @@ async def _complete(session: AsyncSession, wf: Workflow, tasks: list[Task]) -> N
             tokens[k] += int((t.metrics or {}).get(k) or 0)
     failed_branches = [{"key": t.key, "error_type": t.error_type, "error": t.error}
                        for t in tasks if t.status == TaskStatus.FAILED]  # only tolerated ones reach completion
+    final: dict[str, Any] = {}
+    for key in leaves(nodes):
+        t = _chosen_version(wf, tasks, by_key[key])
+        if t is not None and t.status == TaskStatus.SUCCEEDED:
+            final[t.key] = t.output
     wf.result = {
-        "final_outputs": {k: by_key[k].output for k in leaves(nodes) if by_key[k].status == TaskStatus.SUCCEEDED
-                          and _chosen(wf, by_key[k])},
+        "final_outputs": final,
         "summary": (wf.context or {}).get("plan_summary"),
         "skipped": [t.key for t in tasks if t.status == TaskStatus.SKIPPED],
         **({"failed_branches": failed_branches} if failed_branches else {}),

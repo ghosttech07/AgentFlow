@@ -143,6 +143,9 @@ stateDiagram-v2
 | Human approval before sensitive steps | `services/approval_service.py`, claim-time check |
 | Exactly-once side effects | `agents/publisher.py` (idempotency key) |
 | Everything explainable afterwards | `workflow_events`, `llm_calls`, `services/timeline_service.py` |
+| Loops are bounded and never re-run finished work | `engine/scheduler._advance_loops`, `services/graph_service.expand_loop` |
+| Re-planning never undoes finished work | `core/plan_patch.validate_patch`, `services/replan_service.apply` |
+| Memory can't launder untrusted or private data | `services/memory_service.py`, `engine/context.py` |
 
 ## Tools and safe actions (Part 9)
 
@@ -221,3 +224,108 @@ outbox, files and webhooks re-run with the same idempotency key (the webhook rec
 | Read-only SQL (parser + read-only role + READ ONLY transaction + timeout) | `app/tools/sql_query.py`, `scripts/setup_sample_data.py` |
 | Named credentials, redaction of secrets everywhere | `config.CredentialResolver`, `app/tools/redact.py` |
 | Source verification (cite only what was opened) | `app/tools/sources.py`, `ResearcherAgent.postprocess_tools` |
+
+## Adaptive workflows (Part 10)
+
+### Loops by dynamic expansion, not cycles
+
+The task graph stays a DAG at every moment. A loop `[write_guide, review_guide]` starts as two ordinary tasks.
+When `review_guide` succeeds, the scheduler checks the loop's `until` condition in the same transaction as the
+rest of that scheduling pass:
+
+```mermaid
+flowchart LR
+  research --> write_guide --> review_guide
+  review_guide -. "until false: expand" .-> write_guide__v2
+  write_guide --> write_guide__v2 --> review_guide__v2
+  review_guide__v2 --> publish_guide
+```
+
+- **When `until` is false and nothing blocks another iteration** (`max_iterations`, `max_iterations_total`, the
+  LLM-call pre-check), `expand_loop` inserts `<key>__v<n>` rows:
+  - The writer of the new iteration depends on the previous draft and the previous review, and gets their
+    `revision_feedback`.
+  - The dependents of every body task are rewired to the newest iteration.
+  - Expansion is idempotent: a row that already exists is reused, so a crash during expansion never creates a
+    duplicate iteration.
+- **While the loop is open,** tasks downstream of the loop are held (`_blocked_by_open_loop`). They run only after
+  the loop has decided.
+- **When it ends,** the loop state in `workflow.context.loops` records the result: `done` with the
+  `chosen_iteration`, `exhausted`, or `awaiting_human`. With `continue_with_best`, the dependents are rewired to
+  the best finished iteration.
+- **If a body task is skipped, cancelled or superseded,** the iteration can never finish. The loop is then ended
+  with the reason "loop body did not finish" instead of hanging.
+
+**Why not real cycles?**
+- Every Part 4/5 guarantee is written for a DAG: topological promotion, one attempt row per claim, leases, "a
+  SUCCEEDED task is never re-run", and crash recovery that reclaims RUNNING rows.
+- With unrolling, each iteration is its own rows, with its own attempts, cost and output. The history of every
+  draft is kept, and the timeline shows them side by side.
+- A cycle would mean re-running a SUCCEEDED task and overwriting its output. That is exactly what the reliability
+  layer forbids.
+
+### Re-planning sequence
+
+```mermaid
+sequenceDiagram
+  participant S as Scheduler
+  participant DB as PostgreSQL
+  participant E as Engine job
+  participant P as Planner (LLM)
+  participant H as Human
+  S->>DB: task FAILED (opted in) / replan_if true / POST /replan
+  S->>DB: workflow -> REPLANNING, context.replan.state = requested (commit)
+  E->>DB: claim (SKIP LOCKED), state = planning
+  E->>P: graph + failure + remaining budget
+  P-->>E: PlanPatch
+  E->>E: validate_patch (merged graph; never undo finished work); repair up to 2x
+  alt sensitive / too big / replaces a sensitive task
+    E->>DB: plan_versions (proposed) + plan_patch approval (state = proposed)
+    H->>DB: approve / reject (or it expires)
+  end
+  E->>DB: apply in ONE locked txn: new tasks, SUPERSEDED, rewired dependents, plan_versions applied
+  E->>DB: workflow -> previous status (RUNNING / PAUSED)
+```
+
+**What happens on a crash or an expired approval:**
+- **Crash recovery:** a REPLANNING workflow in `planning` or `applying` goes back to `requested`, so it is
+  re-planned. A `proposed` patch keeps waiting for its approval.
+- **An expired plan_patch approval:**
+  - For an automatic trigger, the workflow fails.
+  - For a human trigger, the workflow goes back to its previous status and keeps the current plan.
+  - Expiry is checked even while the workflow is REPLANNING.
+
+### Memory data flow
+
+```mermaid
+flowchart LR
+  R[researcher SUCCEEDED<br/>verified sources] -->|facts, 30 d| M[(memories<br/>FTS tsvector)]
+  L[loop ended after v2+] -->|lesson, 180 d| M
+  C[workflow COMPLETED] -->|artifact summary, 180 d| M
+  M -->|search: FTS rank x recency x confidence, pinned first| X[context.build_agent_input]
+  X -->|PRIOR KNOWLEDGE section<br/>tainted -> untrusted tags| A[next task's prompt]
+  X -->|memory_tainted / memory_private| T[ToolRuntime: taint + exfil rules]
+```
+
+- **What every memory row carries:** `namespace` (per workflow, or a team in Part 11), `tainted`, `private`, its
+  sources, `confidence`, `expires_at`, `pinned` and `deleted_at`.
+- **How the flags are set:** lessons and artifact summaries take `tainted` / `private` from the tasks they were
+  built from.
+- **A tainted memory** is shown inside untrusted tags, and the task that reads it becomes tainted.
+- **A private memory** makes the reading attempt private, so the read-exfiltration rules apply.
+
+### Read-exfiltration guard
+
+A tool attempt that holds private data must not read a URL that could carry that data out. The rule lives in
+`app/tools/exfil.py` and is called from the tool loop.
+
+- **Trusted URLs (provenance)** are only:
+  - search results;
+  - pages fetched in this task;
+  - the task input;
+  - outputs of *untainted* upstream tasks;
+  - memory sources;
+  - the read allowlist.
+- **Any other URL, a URL over the length cap, or a URL containing private tokens** is held for a human approval
+  with a "possible data exfiltration" warning.
+- **`http_request` GET with a body** counts as an `external_write`.

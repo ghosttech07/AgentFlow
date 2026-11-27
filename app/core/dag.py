@@ -138,6 +138,9 @@ def validate_adaptive(tasks: Sequence[Any], loops: Sequence[Any], max_loop_itera
                 add("loop_not_chain", f"Loop '{lp.name}': the body must be a contiguous chain "
                     f"('{cur}' must depend on '{prev}')", cur)
         for k in lp.body:
+            if getattr(by_key[k], "run_if", None):
+                add("loop_body_run_if", f"Loop '{lp.name}': body task '{k}' may not have a run_if (a skipped body "
+                    "task would leave the loop unfinished); put the condition on a task before the loop", k)
             if len(k) > LOOP_KEY_MAX:
                 add("loop_key_too_long", f"Loop '{lp.name}': '{k}' is {len(k)} characters; loop body task key must be "
                     f"<= {LOOP_KEY_MAX} characters so __vN fits", k)

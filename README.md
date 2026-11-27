@@ -176,6 +176,151 @@ Safety, all enforced in code:
 - **Read-only SQL.** One SELECT only (parsed), a read-only database role, a read-only transaction and a timeout.
 - **Secrets.** API credentials are referenced by name and never stored in the journal or logs.
 
+## Adaptive workflows
+
+A plan can change shape while it runs, but always inside limits that code sets and checks.
+The AI can suggest a change. Code decides whether it happens. Nothing that already finished is ever undone.
+
+### Conditions
+
+`run_if`, a loop's `until` and `best_by`, and `replan_if` are short expressions over task outputs.
+Code evaluates them with an AST whitelist; they are never passed to `eval`:
+
+```text
+review_guide.output.approved and review_guide.output.score >= 8
+research_china.output.confidence == 'low' or len(research_china.output.gaps) > 3
+```
+
+- **Names** are task keys. Each name has `.output` (that task's output) and `.status`.
+- **Allowed syntax:** `and` / `or` / `not`, the comparisons, `+ - * / // % **`, indexing, lists, and the functions
+  `len lower upper min max abs round any all`.
+- **Limits:** 300 characters, 80 nodes, depth 12, exponent 64. A string or list built inside a condition can hold
+  at most 10,000 items.
+- **When a condition is checked:**
+  - A syntax error or an unknown key is rejected when the plan is made.
+  - A missing field at run time is recorded as `condition_error`. It never crashes the engine.
+  - `run_if` may only use the task's own dependencies.
+  - A loop's conditions may only use that loop's own tasks.
+
+### Branches and joins
+
+- A task whose `run_if` is false is `SKIPPED` with `skip_reason: condition_false`.
+- A task's `join` controls when it runs:
+  - `all_succeeded` (the default): every dependency must succeed.
+  - `any_succeeded`: one successful dependency is enough.
+  - `all_done`: the task runs once every dependency has finished, successfully or not.
+- **A branch may fail without failing the workflow** when every task that depends on it uses a tolerant join.
+  The workflow still COMPLETES, but:
+  - `result.failed_branches` lists the failed branches;
+  - a `workflow.completed_with_failed_branches` event is recorded;
+  - the dashboard shows a warning badge.
+
+### Feedback loops
+
+```json
+"loops": [{"name": "improve_draft", "body": ["write_guide", "review_guide"],
+           "until": "review_guide.output.approved and review_guide.output.score >= 8",
+           "max_iterations": 3, "on_exhausted": "continue_with_best",
+           "feedback": {"from": "review_guide", "to": "write_guide"}}]
+```
+
+Loops are **unrolled, never cycles**. When `until` is false, code inserts the next iteration as new tasks
+(`write_guide__v2`, `review_guide__v2`):
+
+- The writer gets the reviewer's issues as `revision_feedback` and must list its `changes_made`.
+- Tasks downstream of the loop wait until the loop has decided.
+- Everything stays a DAG, so the Part 5 guarantees still hold: leases, retries, crash recovery, and "finished work
+  is never redone".
+
+**What bounds a loop:**
+- `max_iterations`, capped at `MAX_LOOP_ITERATIONS` (default 5).
+- The budget field `max_iterations_total`.
+- A pre-check that refuses an iteration whose expected LLM calls would cross `max_llm_calls`.
+- Loop body task keys of at most 46 characters, so the `__vN` suffix always fits.
+- Body tasks may not have a `run_if`.
+
+**When the loop runs out** (`on_exhausted`):
+- `continue_with_best` uses the best finished iteration by `best_by` (default: the reviewer's score).
+- `fail` fails the workflow.
+- `ask_human` asks for a workflow-level approval, which can grant extra iterations.
+
+If `best_by` can't be evaluated, the latest finished iteration is used, and the event records why. A loop whose
+current iteration can never finish (for example, a body step skipped by an approver) ends the same way rather
+than hanging.
+
+### Re-planning
+
+A running workflow can get a **PlanPatch**, which adds tasks, cancels tasks that never started, and rewires the
+dependents of a failed task to its replacement.
+
+**What starts a re-plan:**
+- **A task failure**, only if the workflow opted in with `replan_on_failure` (planner-made plans; off by default).
+- **A succeeded task's `replan_if`** being true.
+- **A human**, with `POST /workflows/{id}/replan`. This works on every workflow.
+- **A human patch** sent with `POST /workflows/{id}/plan-patch` while the workflow is PAUSED.
+
+The workflow goes to `REPLANNING` and the planner proposes a patch. Code then validates the merged graph.
+
+**What a patch may never do:**
+- cancel finished, running or approved work;
+- rewire a dependent that already started;
+- cancel a task that belongs to a loop.
+
+**When a human must approve the patch:** it adds a sensitive step, it adds more than
+`REPLAN_AUTO_APPROVE_MAX_TASKS` tasks (default 2), or it replaces a sensitive task. Otherwise it is applied
+automatically.
+
+**How a patch is applied:**
+- In one locked transaction.
+- Replaced tasks become `SUPERSEDED`, and each version is kept in `plan_versions` (`GET /workflows/{id}/plan-versions`).
+- At most `MAX_REPLANS` re-plans per workflow (default 2, or the budget's `max_replans`).
+- A plan_patch approval expires like any other approval, even while the workflow is REPLANNING.
+- A crash during re-planning is recovered: the request is re-run.
+
+### Memory between workflows
+
+After a workflow finishes, three kinds of memory are kept:
+
+| Kind | What it holds | Kept for |
+|---|---|---|
+| Fact | A finding from a researcher whose sources were verified | 30 days |
+| Lesson | What first drafts missed, learned from a loop | 180 days |
+| Artifact summary | A short summary of what the workflow produced | 180 days |
+
+Later tasks in the same `memory.namespace` get the most relevant memories as a PRIOR KNOWLEDGE section:
+
+- **Ranking:** Postgres full-text search, then relevance × recency × confidence. Pinned memories come first.
+- **Answering from memory:** a researcher can answer from memory (`from_memory`) and skip the web.
+- **Managing memories:** `GET /memories` (search), `POST /memories/{id}/pin`, `DELETE /memories/{id}` and
+  `POST /memories/purge-expired`.
+
+**Memory poisoning is contained:**
+- A memory remembers whether its source was tainted (it read untrusted web content) or private (it saw SQL
+  rows). Lessons and summaries inherit both flags from the tasks they came from.
+- A tainted memory is shown inside `<untrusted ...>` tags, and the task that reads it becomes tainted too.
+  Tainted tasks need approval before any external write.
+
+### Exfiltration through reads
+
+A task that holds private data can't leak it by fetching a URL that carries that data. When it reads a URL that
+is not trusted, the call is held for a human. A URL counts as trusted only if it:
+
+- came from a search result,
+- came from a fetched page,
+- came from the task input or an *untainted* upstream task,
+- or is on the read allowlist.
+
+`http_request` GET with a body is treated as a write.
+
+**Demo:** `python scripts/adaptive_demo.py` runs 12 checks offline with the fake model:
+
+1. A loop where the first draft scores 5 and the second scores 9.
+2. Conditional branches.
+3. A re-plan after a permanent failure.
+4. A crash while the second draft is being written, with no duplicate iteration after the restart.
+5. A second run that answers from memory with fewer calls.
+6. An exfiltration attempt that is held for a human.
+
 ## How failures are handled
 
 | Failure | What happens |
@@ -227,7 +372,8 @@ Honest status as of 2026-11-26:
 - **Free Gemini quota is small** (about 20 requests a day on the main model).
 - **Scale is not load-tested.** Designed for one process; running several engines needs
   `ENGINE_SINGLE_NODE=false`, and a load test is Part 14.
-- **No feedback loops or re-planning** yet (Part 10), and no code-execution tool.
+- **Adaptive features are bounded on purpose:** at most 5 loop iterations and 2 re-plans per workflow by default.
+  Memory search is keyword full-text, with no embeddings yet. There is no code-execution tool.
 - **Voice input** is shown in the dashboard but not built yet.
 - **CI runs on GitHub** (secret scan, ruff, the full test suite on Postgres 16); the Docker image is for demos and single-machine use, not a hardened production image.
 
@@ -238,7 +384,7 @@ Honest status as of 2026-11-26:
 | 1-7: foundation, agents, planning, execution engine, reliability, human controls, observability | Done |
 | 8: multi-provider AI and cost control | Done |
 | 9: tools and safe actions (web, HTTP APIs, SQL, files, email, webhooks; crash-safe journal, approvals, taint tracking) | Done |
-| 10: adaptive workflows (feedback loops, conditional branches, bounded re-planning) | Planned |
+| 10: adaptive workflows (feedback loops, conditional branches, bounded re-planning, memory) | Done |
 | 11: policy engine, users and roles, multiple approvers | Planned |
 | 12: tamper-evident audit trail, reproducibility, PII redaction | Planned |
 | 13: quality engine (evals, quality gates, replay) | Planned |

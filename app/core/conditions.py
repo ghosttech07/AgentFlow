@@ -22,6 +22,7 @@ MAX_CHARS = 300
 MAX_NODES = 80
 MAX_DEPTH = 12
 MAX_EXPONENT = 64
+MAX_VALUE_LEN = 10_000  # a string / list built by a condition (repetition, concatenation) stays small
 
 _BIN: dict[type[ast.operator], Callable[[Any, Any], Any]] = {
     ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: operator.truediv,
@@ -64,6 +65,16 @@ def _path(node: ast.AST) -> str | None:
     return None
 
 
+def _check_size(op: ast.operator, left: Any, right: Any) -> None:
+    """Refuse a repetition before it allocates ('a' * 10**12 would exhaust memory before any length check)."""
+    if not isinstance(op, ast.Mult):
+        return
+    for seq, n in ((left, right), (right, left)):
+        if isinstance(seq, str | list | tuple) and isinstance(n, int) and not isinstance(n, bool):
+            if len(seq) * max(n, 0) > MAX_VALUE_LEN:
+                raise ConditionError(f"value longer than {MAX_VALUE_LEN} items")
+
+
 class Condition:
     def __init__(self, expr: str, tree: ast.Expression, refs: set[str]) -> None:
         self.expr, self.tree, self.refs = expr, tree, refs
@@ -74,7 +85,8 @@ class Condition:
             return self._eval(self.tree.body, outputs, {})
         except ConditionError:
             raise
-        except (TypeError, ValueError, ZeroDivisionError, ArithmeticError, IndexError, KeyError) as exc:
+        except (TypeError, ValueError, ZeroDivisionError, ArithmeticError, IndexError, KeyError,
+                MemoryError, RecursionError) as exc:
             raise ConditionError(f"could not evaluate {self.expr!r}: {type(exc).__name__}: {exc}") from exc
 
     def evaluate(self, outputs: dict[str, dict[str, Any] | None]) -> tuple[bool, dict[str, Any]]:
@@ -83,7 +95,8 @@ class Condition:
             result = self._eval(self.tree.body, outputs, values)
         except ConditionError:
             raise
-        except (TypeError, ValueError, ZeroDivisionError, ArithmeticError, IndexError, KeyError) as exc:
+        except (TypeError, ValueError, ZeroDivisionError, ArithmeticError, IndexError, KeyError,
+                MemoryError, RecursionError) as exc:
             raise ConditionError(f"could not evaluate {self.expr!r}: {type(exc).__name__}: {exc}") from exc
         return bool(result), values
 
@@ -111,7 +124,11 @@ class Condition:
             left, right = self._eval(node.left, out, values), self._eval(node.right, out, values)
             if isinstance(node.op, ast.Pow) and (abs(right) > MAX_EXPONENT or abs(left) > 1e6):
                 raise ConditionError("exponent too large")
-            return _BIN[type(node.op)](left, right)
+            _check_size(node.op, left, right)
+            result = _BIN[type(node.op)](left, right)
+            if isinstance(result, str | list | tuple) and len(result) > MAX_VALUE_LEN:
+                raise ConditionError(f"value longer than {MAX_VALUE_LEN} items")
+            return result
         if isinstance(node, ast.Compare):
             left = self._eval(node.left, out, values)
             for op, comp in zip(node.ops, node.comparators, strict=True):
