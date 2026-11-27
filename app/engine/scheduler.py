@@ -235,6 +235,16 @@ async def schedule_workflow(
     # Approval gate: a READY task that needs approval and has none approved waits for a human.
     # An approval stays valid for automatic retries / crash recovery of the same task.
     requested: list[Approval] = []
+    # Part 11: a policy rule can require an approval for a task (it can only add one, never remove it).
+    from app.governance.policy import get_policies
+
+    policies = get_policies()
+    if policies.task_rules():
+        team = await approval_service.team_name(session, wf)
+        for t in tasks:
+            if t.status == TaskStatus.READY and not t.requires_approval and policies.evaluate(
+                    agent_type=t.agent_type, task_key=t.base_key or t.key, team=team).require:
+                t.requires_approval = True
     gated = [t for t in tasks if t.status == TaskStatus.READY and t.requires_approval]
     if gated:
         approved = await approval_service.approved_task_ids(session, wf.id)

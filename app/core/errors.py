@@ -55,3 +55,10 @@ class InvalidTransitionError(AppError):
 class UnauthorizedError(AppError):
     status_code = 401
     code = "unauthorized"
+
+
+class ForbiddenError(AppError):
+    """Authenticated, but the role (or team) does not allow this action."""
+
+    status_code = 403
+    code = "forbidden"

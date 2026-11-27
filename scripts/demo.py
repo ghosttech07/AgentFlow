@@ -20,6 +20,7 @@ DEMOS = {
     "budget": (["budget_demo.py"], "budget limit pauses the workflow, raise it, resume, complete"),
     "tools": (["tools_demo.py"], "tools + approvals; crash right after an email, exactly one email; injection blocked"),
     "adaptive": (["adaptive_demo.py"], "loop 5 -> v2 -> 9, branches, re-plan, crash during v2, memory, exfil held"),
+    "governance": (["governance_demo.py"], "teams + roles, isolation, two approvers, four eyes, safety floor"),
 }
 
 

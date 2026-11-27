@@ -21,6 +21,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app import __version__
 from app.api import (
+    routes_admin,
     routes_agents,
     routes_approvals,
     routes_ask,
@@ -103,6 +104,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                        "after %.1fs.", settings.fake_llm_delay_seconds)
         logger.warning("=" * 72)
     log_tools_config()  # Part 9: a bad tools.yaml stops startup; disabled tools are logged once
+    from app.governance.policy import get_policies
+
+    logger.info("policies.loaded rules=%d", len(get_policies().rules))  # Part 11: a bad policies.yaml stops startup
     app.state.engine = None
     if settings.engine_enabled:
         llm = get_llm_client()
@@ -157,6 +161,7 @@ def create_app() -> FastAPI:
     app.include_router(routes_approvals.router)
     app.include_router(routes_dashboard.router)
     app.include_router(routes_dev.router)
+    app.include_router(routes_admin.router)
     # Dashboard assets (self-hosted fonts); the page itself is GET /dashboard.
     app.mount("/static", StaticFiles(directory=PROJECT_ROOT / "app" / "static"), name="static")
     return app

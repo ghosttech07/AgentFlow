@@ -29,7 +29,7 @@ reliability, cost limits and safety; humans approve under policy; every step is 
    fallback; cost tracking; budgets; persisted quotas (DONE)
 9. [x] **Tools + safe actions**: tool registry (web, HTTP APIs, DB, files, email), side-effect rules, sandboxing (DONE)
 10. [x] **Adaptive workflows**: feedback loops, conditional branches, bounded re-planning, memory (DONE)
-11. [ ] **Policy engine + users/roles**: policy-as-code, RBAC, multi-approver
+11. [x] **Policy engine + users/roles**: policy-as-code, RBAC, multi-approver (DONE)
 12. [ ] **Trust layer**: tamper-evident hash-chained audit, reproducibility, PII redaction, compliance export
 13. [ ] **Quality engine**: evals, quality gates, replay / what-if runs
 14. [ ] **Real-time + scale**: SSE streaming, LISTEN/NOTIFY, multiple workers, shared breaker, load test
@@ -86,6 +86,8 @@ Same rule: build one part, test it, then wait for the next part's prompt.
   communicator on Gemini. Next: Part 10 (adaptive workflows). Open for the user: Docker "full" profile, CI + ruff.
 - Part 10 done (2026-11-27): T1-T14 + final-review fix pass (I-1..I-7 + loop final_outputs, regression tests in
   tests/test_p10_review_fixes.py); adaptive_demo 12/12 PASS; see the Part 10 section. Next: Part 11 (governance).
+- Part 11 done (2026-11-27): users/teams/roles, tenant isolation, policy-as-code + safety floor, multi-approver;
+  tests/test_governance.py; governance_demo 12/12 PASS. Next: Part 12 (trust layer).
 - Docker Desktop on this machine: if `docker` is not on PATH in a fresh shell, it lives at
   `C:\Users\DELL\AppData\Local\Programs\DockerDesktop\resources\bin\docker.exe`.
 
@@ -831,6 +833,70 @@ graph stays a DAG at every moment.** Spec/plan: `docs/superpowers/specs|plans/20
 - **Long local test runs:** wrap them in `python scripts/ci/keep_awake.py -- <cmd>`. Windows Modern Standby paused a
   run for 6 h and its 60 s timers then expired.
 
+## Governance: users, teams, roles, policies (Part 11)
+**Every caller is a known person with one role in one team. Policy-as-code adds approval rules; a code safety floor
+can't be switched off. Teams can't see each other.**
+
+### Identity (`app/api/auth.py`, `app/governance/principal.py`, `app/api/routes_admin.py`)
+- **Tables:** `teams`, `users` (name, team_id, role viewer|operator|approver|admin, api_key_hash = sha256, active).
+  Migration 0009 also adds `workflows.team_id` + `created_by` and the approval columns `required_approvals`,
+  `approver_role`, `votes`, `policy_rules`.
+- **`get_principal`** (yield dependency) reads X-API-Key and sets a contextvar (`principal.current()`, reset after the
+  request; the engine runs as SYSTEM). Principal kinds:
+  - `admin_key`: ADMIN_API_KEY, global admin.
+  - `user`: hash lookup, active only.
+  - `anonymous`: users exist and no key was sent.
+  - `open`: no users; role admin without ADMIN_API_KEY, viewer with it (legacy behaviour).
+- **Role gates:** `require_role(viewer|operator|approver|admin)`. `require_admin` = operator (the Part 6 control
+  name). Create / plan / start use `require_creator` (open in legacy modes, operator+ with users).
+- **Actor:** `Principal.actor(body_actor)`. A user is always recorded as themselves; actor fields are optional now.
+- **Admin API:**
+  - `/me`;
+  - `/admin/teams` (global admin);
+  - `/admin/users` (key returned ONCE; a team admin manages only their own team);
+  - `/admin/users/{id}/disable|rotate-key`;
+  - `/admin/policies`.
+  Bootstrap: open mode or the admin key. The first user closes the open mode.
+
+### Tenant isolation (`app/governance/access.py`)
+- **Path objects:** router-level `scoped("workflow_id"|"approval_id", check_*)` returns 404 for another team's object.
+- **Lists:** `list_workflows` and `list_approvals` filter by `workflow_filters()`.
+- **Memory:** a team's namespace = `team-<team_id>:<ns>` (set at workflow creation; memory routes check the prefix).
+- **Global principals** (open, admin key, system, a user without a team) see everything. Workflows with NULL team are
+  global-only.
+- **Not team-scoped yet:** `/history`, `/asks`, `/metrics/summary`, `/providers`.
+
+### Policy engine (`app/governance/policy.py`, `config/policies.yaml` = POLICIES_CONFIG_PATH)
+- **Rules:** `{name, when {agent_type, task_key glob, tool, team, side_effect, recipient_not_in_domains},
+  require_approval (true only), approvals (1-10 distinct people), approver_role, deny}`, validated at startup
+  (`PolicyConfigError`).
+- **Evaluation:** `evaluate(**ctx)` merges every matching rule, strictest wins.
+- **Where it applies:**
+  - The scheduler gate sets `requires_approval` on READY tasks matched by task rules.
+  - `approval_service._apply_policy` stamps `required_approvals` / `approver_role` / `policy_rules` (+ payload.policy)
+    on task and tool-call approvals.
+  - The tool loop (`ToolLoop._policy`): `deny` -> a rejected_invalid row ("denied by policy (rule)"); `require` ->
+    suspend for approval.
+- **Multi-approver** (`approval_service._authorize` / `_record_vote`): votes `{voter, actor, at, comment,
+  overrides?}`.
+  - Not enough votes yet: the approval stays pending (event `approval.vote_recorded`).
+  - An edit resets earlier votes. The final apply uses the first vote's overrides.
+  - Any eligible reject rejects.
+- **SAFETY_FLOOR** (code):
+  - sensitive agents always need an approval;
+  - a tainted external_write always needs an approval;
+  - policies only add requirements;
+  - approvers / admins only (a lower approver_role is raised to approver);
+  - 2+ approvers: one vote per voter (the admin key = one voter), the workflow creator can't vote (four eyes);
+  - one veto rejects.
+
+### Visibility + demo
+- **Dashboard:** "Signed in as ..." under Settings (from `/me`; the actor field is locked to the user); approval
+  cards show "Needs N different approvers · k so far: names · policy: rules"; 401/403 messages.
+- **Timeline:** describes `approval.vote_recorded`.
+- **Demo:** `python scripts/governance_demo.py` (fake, 12 checks). Its `gd-*` users/teams are deleted from the DB at the
+  start and the end (otherwise every other demo would need keys).
+
 ## Coding conventions
 - **Async everywhere** (routes, services, DB access). No sync DB calls in app code.
 - **Thin routes**: parse/validate → call a service → convert to schema. No logic in routes.
@@ -864,6 +930,7 @@ python scripts/controls_demo.py             # Part 6: pause/resume, approve, rej
 python scripts/budget_demo.py               # Part 8: budget pause + PATCH + resume (fake LLM)
 python scripts/setup_sample_data.py         # Part 9: sample database + read-only role for sql_query
 python scripts/tools_demo.py                # Part 9: tools + approvals + crash after email + injection (fake)
+python scripts/governance_demo.py           # Part 11: roles, isolation, two approvers, four eyes (fake)
 python scripts/adaptive_demo.py             # Part 10: loops, branches, re-plan, crash during v2, memory, exfil (fake)
 python scripts/demo.py                      # every demo, one PASS/FAIL table
 python scripts/list_provider_models.py      # Part 8: models your keys / local Ollama offer

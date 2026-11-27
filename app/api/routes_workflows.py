@@ -9,12 +9,14 @@ from fastapi import APIRouter, Depends, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.auth import require_admin
+from app.api.auth import require_admin, require_creator, scoped
 from app.core.enums import WorkflowStatus
 from app.core.plan_patch import PlanPatch
 from app.db.session import get_session
 from app.engine import Engine
 from app.engine.deps import get_engine
+from app.governance import access
+from app.governance.principal import current
 from app.llm import LLMClient, get_llm_client
 from app.schemas.attempt import AttemptRead
 from app.schemas.common import ErrorResponse
@@ -25,7 +27,8 @@ from app.schemas.task import TaskRead
 from app.schemas.workflow import BudgetUpdate, WorkflowCreate, WorkflowDetail, WorkflowList, WorkflowRead
 from app.services import budget_service, control_service, planning_service, timeline_service, workflow_service
 
-router = APIRouter(prefix="/workflows", tags=["workflows"])
+router = APIRouter(prefix="/workflows", tags=["workflows"],
+                   dependencies=[Depends(scoped("workflow_id", access.check_workflow))])
 
 NOT_FOUND = {404: {"model": ErrorResponse, "description": "Workflow not found"}}
 CONTROL = {**NOT_FOUND, 401: {"model": ErrorResponse, "description": "Missing or invalid X-API-Key"}}
@@ -33,6 +36,7 @@ CONTROL = {**NOT_FOUND, 401: {"model": ErrorResponse, "description": "Missing or
 
 @router.post(
     "",
+    dependencies=[Depends(require_creator)],
     response_model=WorkflowDetail,
     status_code=status.HTTP_201_CREATED,
     responses={422: {"model": ErrorResponse, "description": "Invalid request or task graph"}},
@@ -60,6 +64,7 @@ async def create_workflow(
 
 @router.post(
     "/{workflow_id}/start",
+    dependencies=[Depends(require_creator)],
     response_model=WorkflowDetail,
     status_code=status.HTTP_202_ACCEPTED,
     responses={**NOT_FOUND, 409: {"model": ErrorResponse, "description": "No tasks, already running, or terminal"}},
@@ -127,7 +132,7 @@ async def replan_workflow(workflow_id: uuid.UUID, body: ReplanRequest, session: 
     Finished, running and approved work is never changed; bounded by MAX_REPLANS."""
     from app.services import replan_service
 
-    await replan_service.request_human(session, workflow_id, body.actor, body.instructions)
+    await replan_service.request_human(session, workflow_id, current().actor(body.actor), body.instructions)
     if engine:
         engine.wake()
     return await workflow_service.detail_with_usage(session, await workflow_service.get_workflow(session, workflow_id))
@@ -140,7 +145,7 @@ async def patch_plan(workflow_id: uuid.UUID, body: PlanPatchRequest, session: As
     """Apply a human-written plan patch while the workflow is PAUSED (same validation as the planner's)."""
     from app.services import replan_service
 
-    await replan_service.human_patch(session, workflow_id, body.actor, body.patch)
+    await replan_service.human_patch(session, workflow_id, current().actor(body.actor), body.patch)
     return await workflow_service.detail_with_usage(session, await workflow_service.get_workflow(session, workflow_id))
 
 
@@ -154,7 +159,7 @@ async def pause_workflow(
 ) -> WorkflowDetail:
     """Pause (graceful: running tasks finish; immediate: they are interrupted). Idempotent."""
     body = body or PauseRequest()
-    workflow, interrupted = await control_service.pause(session, workflow_id, actor=body.actor,
+    workflow, interrupted = await control_service.pause(session, workflow_id, actor=current().actor(body.actor),
                                                         reason=body.reason, mode=body.mode)
     if engine:
         engine.interrupt(interrupted)
@@ -170,7 +175,7 @@ async def resume_workflow(
     engine: Engine | None = Depends(get_engine),
 ) -> WorkflowDetail:
     """PAUSED -> RUNNING (or AWAITING_APPROVAL if only approvals block it). Completed work is kept."""
-    workflow = await control_service.resume(session, workflow_id, actor=(body or ResumeRequest()).actor)
+    workflow = await control_service.resume(session, workflow_id, actor=current().actor((body or ResumeRequest()).actor))
     if engine:
         engine.wake()
     return WorkflowDetail.from_model(workflow)
@@ -186,7 +191,7 @@ async def cancel_workflow(
 ) -> WorkflowDetail:
     """Cancel all unfinished tasks and pending approvals; running results are discarded. Idempotent."""
     body = body or CancelRequest()
-    workflow, running = await control_service.cancel(session, workflow_id, actor=body.actor, reason=body.reason)
+    workflow, running = await control_service.cancel(session, workflow_id, actor=current().actor(body.actor), reason=body.reason)
     if engine:
         engine.interrupt(running)
     return WorkflowDetail.from_model(workflow)
@@ -262,13 +267,14 @@ async def update_workflow_budget(
 ) -> WorkflowDetail:
     """Raise or adjust budget limits (merged onto the current ones; null = unlimited). A workflow
     paused for its budget stays PAUSED: resume it with POST /workflows/{id}/resume."""
-    await budget_service.update_budget(session, workflow_id, actor=body.actor, budget=body.budget.stored())
+    await budget_service.update_budget(session, workflow_id, actor=current().actor(body.actor), budget=body.budget.stored())
     workflow = await workflow_service.get_workflow(session, workflow_id)
     return await workflow_service.detail_with_usage(session, workflow)
 
 
 @router.post(
     "/{workflow_id}/plan",
+    dependencies=[Depends(require_creator)],
     response_model=WorkflowDetail,
     responses={
         **NOT_FOUND,
