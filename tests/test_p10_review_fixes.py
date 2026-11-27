@@ -159,3 +159,20 @@ async def test_continue_with_best_at_the_end_still_has_final_outputs(client: Asy
     d = await detail(client, wf)
     assert d["status"] == "COMPLETED"
     assert d["result"]["final_outputs"].get("review_guide", {}).get("score") == 7  # the chosen (best) iteration
+
+
+# --------------------------------------------------------------------------- 5x finding: crashed re-plan job
+async def test_a_replan_job_that_crashes_does_not_hang(client: AsyncClient, make_engine, monkeypatch) -> None:  # noqa: ANN001
+    from app.services import replan_service
+    from tests.test_replanning import ALT, llm, make
+
+    async def boom(*_a, **_k):  # noqa: ANN002, ANN003, ANN202
+        raise RuntimeError("graph changed under the patch")
+
+    monkeypatch.setattr(replan_service, "propose_or_apply", boom)
+    wf = await make(client)
+    await make_engine(llm(ALT)).run_until_idle()
+    d = await detail(client, wf)
+    assert d["status"] == "FAILED"  # automatic trigger: the re-plan failure fails the workflow, never stuck REPLANNING
+    types = [e["event_type"] for e in (await client.get(f"/workflows/{wf}/events")).json()]
+    assert "workflow.replan_failed" in types
