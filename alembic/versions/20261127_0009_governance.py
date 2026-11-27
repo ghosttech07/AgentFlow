@@ -46,6 +46,10 @@ def upgrade() -> None:
     op.create_index(op.f("ix_workflows_team_id"), "workflows", ["team_id"])
     op.create_foreign_key(op.f("fk_workflows_team_id_teams"), "workflows", "teams", ["team_id"], ["id"],
                           ondelete="SET NULL")
+    op.add_column("asks", sa.Column("team_id", sa.Uuid(), nullable=True))
+    op.add_column("asks", sa.Column("created_by", sa.String(length=64), nullable=True))
+    op.create_index(op.f("ix_asks_team_id"), "asks", ["team_id"])
+    op.create_foreign_key(op.f("fk_asks_team_id_teams"), "asks", "teams", ["team_id"], ["id"], ondelete="SET NULL")
     op.add_column("approvals", sa.Column("required_approvals", sa.Integer(), server_default=sa.text("1"),
                                          nullable=False))
     op.add_column("approvals", sa.Column("approver_role", sa.String(length=16), nullable=True))
@@ -58,6 +62,10 @@ def upgrade() -> None:
 def downgrade() -> None:
     for col in ("policy_rules", "votes", "approver_role", "required_approvals"):
         op.drop_column("approvals", col)
+    op.drop_constraint(op.f("fk_asks_team_id_teams"), "asks", type_="foreignkey")
+    op.drop_index(op.f("ix_asks_team_id"), table_name="asks")
+    op.drop_column("asks", "created_by")
+    op.drop_column("asks", "team_id")
     op.drop_constraint(op.f("fk_workflows_team_id_teams"), "workflows", type_="foreignkey")
     op.drop_index(op.f("ix_workflows_team_id"), table_name="workflows")
     op.drop_column("workflows", "created_by")

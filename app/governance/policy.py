@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from app.governance.principal import ROLE_RANK
 
@@ -72,6 +72,18 @@ class Rule(BaseModel):
     approvals: int | None = Field(default=None, ge=1, le=10)
     approver_role: Literal["viewer", "operator", "approver", "admin"] | None = None
     deny: bool = False
+
+    @model_validator(mode="after")
+    def _deny_needs_tool(self) -> Rule:
+        if self.deny and not self.is_tool_rule:
+            raise ValueError(f"rule {self.name!r}: deny applies to tool calls; add a tool, side_effect or "
+                             "recipient_not_in_domains condition")
+        return self
+
+    @property
+    def is_tool_rule(self) -> bool:
+        w = self.when
+        return bool(w.tool or w.side_effect or w.recipient_not_in_domains is not None)
 
     @field_validator("approver_role")
     @classmethod
@@ -128,17 +140,19 @@ class Policies:
                 return False
         return True
 
-    def evaluate(self, **ctx: Any) -> Requirement:
+    def evaluate(self, scope: str | None = None, **ctx: Any) -> Requirement:
+        """scope "task": only rules without a tool condition (a whole task); "tool": only tool rules (one call)."""
         req = Requirement()
         for r in self.rules:
+            if scope == "task" and r.is_tool_rule or scope == "tool" and not r.is_tool_rule:
+                continue
             if self._match(r, ctx):
                 req.merge(r)
         return req
 
     def task_rules(self) -> list[Rule]:
         """Rules that can apply to a whole task (no tool condition)."""
-        return [r for r in self.rules if not r.when.tool and not r.when.side_effect
-                and r.when.recipient_not_in_domains is None]
+        return [r for r in self.rules if not r.is_tool_rule]
 
 
 def load_policies(path: str | Path) -> Policies:

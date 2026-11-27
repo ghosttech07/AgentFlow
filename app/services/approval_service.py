@@ -140,6 +140,40 @@ async def _record_vote(session: AsyncSession, approval: Approval, wf: Workflow, 
     return done
 
 
+async def _recheck_edited_call(session: AsyncSession, wf: Workflow, task: Task, approval: Approval,
+                               overrides: dict[str, Any]) -> None:
+    """The approver's edited arguments go through the policy again: a deny refuses the edit; a stricter rule raises
+    the number of approvers / the role, and earlier votes no longer count (they approved different content)."""
+    from app.core.errors import ForbiddenError
+    from app.governance.policy import get_policies, recipients_of
+
+    payload = approval.request_payload or {}
+    final = {**(payload.get("arguments") or {}), **overrides}
+    req = get_policies().evaluate(scope="tool", team=await team_name(session, wf), agent_type=task.agent_type,
+                                  task_key=task.base_key or task.key, tool=payload.get("tool"),
+                                  side_effect=payload.get("side_effect"), recipients=recipients_of(final))
+    if req.deny:
+        await session.rollback()
+        raise ForbiddenError(f"These arguments are denied by policy ({', '.join(req.rules)})")
+    from app.governance.principal import ROLE_RANK
+
+    stricter_role = req.approver_role and (approval.approver_role is None
+                                           or ROLE_RANK[req.approver_role] > ROLE_RANK[approval.approver_role])
+    if req.approvals > approval.required_approvals or stricter_role:
+        approval.required_approvals = max(approval.required_approvals, req.approvals)
+        if stricter_role:
+            approval.approver_role = req.approver_role
+        approval.policy_rules = sorted(set(approval.policy_rules or []) | set(req.rules))
+        approval.votes = []
+        _authorize(approval, wf, _voter_name(), voting=True)  # the editor must still be allowed under the new rule
+
+
+def _voter_name() -> str:
+    from app.governance.principal import current
+
+    return current().name or "admin"
+
+
 async def request_approval(session: AsyncSession, wf: Workflow, task: Task, settings: Settings) -> Approval:
     """READY gated task -> AWAITING_APPROVAL + a pending approval (event approval.requested)."""
     now = utcnow()
@@ -149,7 +183,8 @@ async def request_approval(session: AsyncSession, wf: Workflow, task: Task, sett
         expires_at=now + timedelta(hours=hours) if hours > 0 else None,
         request_payload=build_request_payload(wf, task),
     )
-    await _apply_policy(session, wf, approval, agent_type=task.agent_type, task_key=task.base_key or task.key)
+    await _apply_policy(session, wf, approval, scope="task", agent_type=task.agent_type,
+                        task_key=task.base_key or task.key)
     session.add(approval)
     await transition_task(
         session, task, TaskStatus.AWAITING_APPROVAL, event_type=EventType.APPROVAL_REQUESTED,
@@ -175,8 +210,8 @@ async def request_tool_approval(session: AsyncSession, wf: Workflow, task: Task,
     )
     from app.governance.policy import recipients_of
 
-    await _apply_policy(session, wf, approval, agent_type=task.agent_type, task_key=task.base_key or task.key,
-                        tool=payload.get("tool"), side_effect=payload.get("side_effect"),
+    await _apply_policy(session, wf, approval, scope="tool", agent_type=task.agent_type,
+                        task_key=task.base_key or task.key, tool=payload.get("tool"), side_effect=payload.get("side_effect"),
                         recipients=recipients_of(payload.get("arguments") or {}))
     session.add(approval)
     await session.flush()
@@ -409,6 +444,8 @@ async def approve(
 ) -> Approval:
     approval, wf, task = await _lock_pending(session, approval_id)
     _authorize(approval, wf, actor, voting=True)
+    if approval.kind == "tool_call" and arguments_overrides:
+        await _recheck_edited_call(session, wf, task, approval, arguments_overrides)
     if approval.required_approvals > 1:
         given = {"input_overrides": input_overrides, "arguments_overrides": arguments_overrides,
                  "allow_recipient_override": allow_recipient_override}

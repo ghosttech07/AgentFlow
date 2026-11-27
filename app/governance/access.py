@@ -41,15 +41,24 @@ async def check_approval(session: AsyncSession, approval_id: uuid.UUID) -> None:
         raise NotFoundError(f"Approval {approval_id} not found")
 
 
+MAX_NAMESPACE = 64  # memories.namespace is String(64)
+
+
 def team_prefix(team_id: uuid.UUID | None) -> str:
-    return f"team-{team_id}:" if team_id else ""
+    return f"t{team_id.hex[:12]}:" if team_id else ""  # short, so the requested name keeps most of the 64 chars
 
 
 def memory_namespace(requested: str, p: Principal | None = None) -> str:
     """A team user's memory lives under the team's prefix; they can never name another team's namespace."""
     p = p or current()
     prefix = "" if p.is_global else team_prefix(p.team_id)
-    return requested if requested.startswith(prefix) else prefix + requested
+    full = requested if requested.startswith(prefix) else prefix + requested
+    if len(full) > MAX_NAMESPACE:  # checked here, not at the first memory write inside a task's success
+        from app.core.errors import ValidationFailedError
+
+        raise ValidationFailedError(f"memory namespace too long: at most {MAX_NAMESPACE - len(prefix)} characters "
+                                    "for your team")
+    return full
 
 
 def check_memory_namespace(namespace: str) -> None:

@@ -80,6 +80,15 @@ async def require_creator(p: Principal = Depends(get_principal)) -> Principal:
     raise ForbiddenError(f"Your role '{p.role}' cannot do this (needs operator or higher)")
 
 
+async def require_ops_view(p: Principal = Depends(get_principal)) -> Principal:
+    """Cross-team operational views (metrics, engine status): open in the legacy modes, else a global admin."""
+    if p.kind == "open" or (p.is_global and p.at_least("admin")):
+        return p
+    if p.kind == "anonymous":
+        raise UnauthorizedError("Missing or invalid X-API-Key header")
+    raise ForbiddenError("Only a global admin can see totals across all teams")
+
+
 require_admin = require_operator  # Part 6 name: control endpoints (pause/resume/cancel/retry/budget/replan)
 
 

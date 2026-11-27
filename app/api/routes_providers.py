@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.auth import require_ops_view
 from app.db.session import get_session
 from app.llm import LLMClient, get_llm_client
 from app.llm.router import ModelRouter
@@ -24,7 +25,7 @@ async def providers(llm: LLMClient = Depends(get_llm_client)) -> dict[str, Any]:
     return await provider_service.providers_status(llm)
 
 
-@router.get("/metrics/summary")
+@router.get("/metrics/summary", dependencies=[Depends(require_ops_view)])
 async def metrics_summary(session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
     """Totals (calls, failures, cost, tokens, unpriced calls, fallbacks) and per provider / provider:model
     stats (calls, errors, error rate, average latency, cost) from every recorded LLM call."""

@@ -110,7 +110,7 @@ async def test_team_memory_namespaces_are_separate(client: AsyncClient) -> None:
     keys = await setup_org(client)
     r = await client.post("/workflows", json={"name": "w", "goal": "g", "memory": {"namespace": "default"}},
                           headers=keys["olga"])
-    assert r.json()["context"]["memory"]["namespace"].startswith("team-")
+    assert r.json()["context"]["memory"]["namespace"].startswith("t")
     r2 = await client.post("/workflows", json={"name": "w", "goal": "g", "memory": {
         "namespace": r.json()["context"]["memory"]["namespace"]}}, headers=keys["mia"])
     assert r2.json()["context"]["memory"]["namespace"] != r.json()["context"]["memory"]["namespace"]
@@ -258,3 +258,79 @@ async def test_a_policy_can_deny_a_tool_call(client: AsyncClient, make_engine, s
     assert [(r.tool, r.status) for r in rows] == [("send_email", "rejected_invalid")]
     assert "denied by policy (no_email)" in rows[0].error
     assert not list((tmp_path / "outbox").glob("*.eml"))  # nothing was sent
+
+
+# ------------------------------------------------------------------------------ final review fixes (C1, I1-I4)
+async def test_history_and_asks_are_per_team(client: AsyncClient, monkeypatch) -> None:  # noqa: ANN001
+    from app.services import ask_service
+
+    async def fake_ask(question, llm, settings):  # noqa: ANN001, ANN202
+        return {"answer": "a", "key_points": [], "sources": []}
+
+    monkeypatch.setattr(ask_service, "ask", fake_ask)
+    keys = await setup_org(client)
+    wf = await create(client, keys["olga"], [task("a")])
+    q = (await client.post("/ask", json={"question": "research question"}, headers=keys["olga"])).json()["id"]
+    assert (await client.get("/history")).status_code == 401
+    assert (await client.post("/ask", json={"question": "free money?"})).status_code == 401
+    mine = {i["id"] for i in (await client.get("/history", headers=keys["vic"])).json()["items"]}
+    theirs = {i["id"] for i in (await client.get("/history", headers=keys["mia"])).json()["items"]}
+    assert {wf, q} <= mine and not ({wf, q} & theirs)
+    assert (await client.get(f"/asks/{q}", headers=keys["mia"])).status_code == 404
+
+
+async def test_ops_endpoints_need_a_key_once_users_exist(client: AsyncClient) -> None:
+    keys = await setup_org(client)
+    for method, url, body in (("POST", "/plans/preview", {"goal": "g"}), ("GET", "/dev/chaos", None),
+                              ("GET", "/metrics/summary", None), ("GET", "/engine/status", None)):
+        r = await client.request(method, url, json=body)
+        assert r.status_code == 401, (url, r.status_code)
+    wf = await create(client, keys["olga"], [task("a")])
+    r = await client.post("/dev/chaos", json={"workflow_id": wf, "task_key": "a", "mode": "hang"}, headers=keys["mia"])
+    assert r.status_code in (403, 404)  # never on another team's workflow
+    assert (await client.get("/metrics/summary", headers=keys["mia"])).status_code == 403  # cross-team totals
+
+
+async def test_a_long_team_namespace_is_rejected_up_front(client: AsyncClient) -> None:
+    keys = await setup_org(client)
+    r = await client.post("/workflows", json={"name": "w", "goal": "g", "memory": {"namespace": "n" * 60}},
+                          headers=keys["olga"])
+    assert r.status_code in (201, 422)
+    if r.status_code == 201:
+        assert len(r.json()["context"]["memory"]["namespace"]) <= 64
+
+
+def test_task_rules_do_not_apply_to_tool_calls_and_tool_deny_needs_a_tool() -> None:
+    pols = Policies([Rule.model_validate({"name": "r", "when": {"agent_type": "researcher"}, "approvals": 2})])
+    assert pols.evaluate(scope="tool", agent_type="researcher", tool="web_search").rules == []
+    assert pols.evaluate(scope="task", agent_type="researcher").approvals == 2
+    with pytest.raises(ValueError):
+        Rule.model_validate({"name": "x", "when": {"agent_type": "writer"}, "deny": True})
+
+
+async def test_edited_arguments_are_checked_against_the_policy(client: AsyncClient, make_engine, session_factory,  # noqa: ANN001
+                                                                monkeypatch, tmp_path) -> None:  # noqa: ANN001
+    from app.agents.writer import WriterAgent
+    from app.llm.fake_client import FakeScript
+    from tests.engine_helpers import match, started_workflow
+    from tests.test_budgets import fake_router
+    from tests.tool_helpers import BASE_AGENTS, BASE_TOOLS, call, final, use_tools
+
+    monkeypatch.setattr(WriterAgent, "allowed_tools", ("send_email",))
+    use_tools(monkeypatch, tools={**BASE_TOOLS, "send_email": {**BASE_TOOLS["send_email"], "approval": "always",
+                                                               "allowed_recipients": ["*@example.com", "*@outside.com"]}},
+              agents={**BASE_AGENTS, "writer": ["send_email"]})
+    use_policies(monkeypatch, {"name": "outside", "when": {"tool": "send_email",
+                                                           "recipient_not_in_domains": ["example.com"]},
+                               "approvals": 2, "approver_role": "approver"})
+    report = {"title": "t", "content": "c", "word_count": 1}
+    router, _ = fake_router(session_factory, llm=FakeLLMClient(scripts=[FakeScript(match=match("w"), steps=[
+        call("send_email", to=["a@example.com"], subject="s", body="b"), final(report)])]))
+    wf = await started_workflow(client, [task("w", "writer")])
+    await make_engine(router, outbox_dir=tmp_path / "outbox").run_until_idle()
+    a = (await client.get(f"/approvals?status=pending&workflow_id={wf}")).json()[0]
+    assert a["required_approvals"] == 1  # inside the company: one approval
+    r = await client.post(f"/approvals/{a['id']}/approve", json={
+        "actor": "dana", "arguments_overrides": {"to": ["x@outside.com"]}})
+    assert r.status_code == 200 and r.json()["status"] == "pending"  # the edit makes it need 2 people
+    assert r.json()["required_approvals"] == 2 and r.json()["policy_rules"] == ["outside"]

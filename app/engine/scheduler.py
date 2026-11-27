@@ -243,7 +243,7 @@ async def schedule_workflow(
         team = await approval_service.team_name(session, wf)
         for t in tasks:
             if t.status == TaskStatus.READY and not t.requires_approval and policies.evaluate(
-                    agent_type=t.agent_type, task_key=t.base_key or t.key, team=team).require:
+                    scope="task", agent_type=t.agent_type, task_key=t.base_key or t.key, team=team).require:
                 t.requires_approval = True
     gated = [t for t in tasks if t.status == TaskStatus.READY and t.requires_approval]
     if gated:

@@ -6,11 +6,12 @@ from typing import Any
 
 from fastapi import APIRouter, Depends
 
+from app.api.auth import require_ops_view
 from app.config import get_settings
 from app.engine import Engine
 from app.engine.deps import get_engine
 
-router = APIRouter(prefix="/engine", tags=["engine"])
+router = APIRouter(prefix="/engine", tags=["engine"], dependencies=[Depends(require_ops_view)])
 
 
 @router.get("/status")

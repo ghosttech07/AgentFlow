@@ -861,16 +861,24 @@ can't be switched off. Teams can't see each other.**
 ### Tenant isolation (`app/governance/access.py`)
 - **Path objects:** router-level `scoped("workflow_id"|"approval_id", check_*)` returns 404 for another team's object.
 - **Lists:** `list_workflows` and `list_approvals` filter by `workflow_filters()`.
-- **Memory:** a team's namespace = `team-<team_id>:<ns>` (set at workflow creation; memory routes check the prefix).
+- **Memory:** a team's namespace = `t<team_id hex[:12]>:<ns>` (set at workflow creation; ≤ 64 chars checked up
+  front, 422; memory routes check the prefix).
+- **History:** `asks.team_id` / `created_by`; `/history` and `/asks/{id}` are filtered by team.
 - **Global principals** (open, admin key, system, a user without a team) see everything. Workflows with NULL team are
   global-only.
-- **Not team-scoped yet:** `/history`, `/asks`, `/metrics/summary`, `/providers`.
+- **Gated endpoints:** `/ask`, `/plans/preview` and `/dev/chaos` need operator+ with users (chaos only on your own team's
+  workflows). `/metrics/summary` and `/engine/status` are `require_ops_view` (legacy open, else a global admin).
+  `/providers` and `/health` stay public.
 
 ### Policy engine (`app/governance/policy.py`, `config/policies.yaml` = POLICIES_CONFIG_PATH)
 - **Rules:** `{name, when {agent_type, task_key glob, tool, team, side_effect, recipient_not_in_domains},
   require_approval (true only), approvals (1-10 distinct people), approver_role, deny}`, validated at startup
   (`PolicyConfigError`).
-- **Evaluation:** `evaluate(**ctx)` merges every matching rule, strictest wins.
+- **Evaluation:** `evaluate(scope, **ctx)` merges every matching rule, strictest wins. scope "task" = rules without
+  a tool / side_effect / recipient condition (scheduler gate, task approvals); "tool" = only tool rules (tool loop,
+  tool approvals). `deny` needs a tool condition (validated).
+- **Edited arguments:** an approver's `arguments_overrides` are re-evaluated (`_recheck_edited_call`). deny -> 403;
+  stricter -> more approvers / a higher role, earlier votes cleared.
 - **Where it applies:**
   - The scheduler gate sets `requires_approval` on READY tasks matched by task rules.
   - `approval_service._apply_policy` stamps `required_approvals` / `approver_role` / `policy_rules` (+ payload.policy)

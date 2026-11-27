@@ -372,7 +372,7 @@ class ToolLoop:
             async with self.sf() as s:
                 self._team_name = await s.scalar(select(Team.name).join(Workflow, Workflow.team_id == Team.id)
                                                  .where(Workflow.id == self.rt.workflow_id))
-        return get_policies().evaluate(agent_type=self.agent.agent_type, task_key=self.rt.task_key, tool=tool.name,
+        return get_policies().evaluate(scope="tool", agent_type=self.agent.agent_type, task_key=self.rt.task_key, tool=tool.name,
                                        side_effect=side, team=self._team_name, recipients=recipients_of(args))
 
     def _needs_approval(self, tool: Tool, side_effect: str) -> bool:

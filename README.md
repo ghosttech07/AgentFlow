@@ -357,7 +357,7 @@ The roles are ordered; each one can do everything the roles above it can.
 
 - A user only sees their own team's workflows, approvals, events and memories.
 - Another team's object answers **404**, so its existence is not revealed.
-- Memory is stored under the team's own namespace.
+- Memory is stored under the team's own namespace, and Quick Ask history is per team.
 - The actor recorded on every action is the signed-in user, whatever the request body says.
 
 ### Backward compatible
@@ -385,6 +385,10 @@ rules:
 - **How a rule matches:** every key in `when` must match. The keys are `agent_type`, `task_key` (glob), `tool`,
   `team`, `side_effect` and `recipient_not_in_domains`.
 - **When several rules match,** the strictest wins.
+- **Tool rules and task rules are separate.** A rule with a `tool`, `side_effect` or recipient condition applies to
+  single tool calls. Any other rule applies to whole tasks. `deny` needs a tool condition.
+- **An approver's edits are checked again.** Edited tool arguments go through the policy again, so an approver who
+  changes the recipient to an outside address triggers the stricter rule.
 - **The file is checked at startup.** A bad file stops the app. `GET /admin/policies` lists the rules and the
   safety floor.
 
@@ -453,8 +457,8 @@ Honest status as of 2026-11-26:
 - **OpenAI's strict structured-output mode may reject the free-form `arguments` object** of the tool protocol
   (Gemini and Ollama accept it); not tested live (no OpenAI key).
 - **No code-execution tool** and no native function calling (both future work).
-- **Quick Ask history, metrics and providers are not team-scoped yet.** Workflows, approvals, events and memory
-  are scoped by team. Keys are API keys; there is no SSO or OIDC login.
+- **Keys are API keys** (no SSO / OIDC login yet). Cross-team totals (`/metrics/summary`, `/engine/status`) are
+  for global admins only.
 - **Free web search is best-effort.** Without a Tavily key the researcher uses free metasearch, which
   can be throttled or return thin results. Gemini's own Google Search grounding needs billing.
 - **Small local models are weak at planning and writing.** `llama3.2:3b` researches well enough but
