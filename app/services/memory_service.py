@@ -186,9 +186,12 @@ async def soft_delete(session: AsyncSession, memory_id: uuid.UUID, actor: str) -
     await session.commit()
 
 
-async def purge_expired(session: AsyncSession) -> int:
-    res = await session.execute(update(Memory).where(Memory.deleted_at.is_(None), Memory.expires_at.is_not(None),
-                                                     Memory.expires_at <= utcnow()).values(deleted_at=utcnow()))
+async def purge_expired(session: AsyncSession, namespace_prefix: str | None = None) -> int:
+    """Soft-delete expired memories; `namespace_prefix` limits it to one team (None = every team: superadmin)."""
+    where = [Memory.deleted_at.is_(None), Memory.expires_at.is_not(None), Memory.expires_at <= utcnow()]
+    if namespace_prefix is not None:
+        where.append(Memory.namespace.startswith(namespace_prefix, autoescape=True))
+    res = await session.execute(update(Memory).where(*where).values(deleted_at=utcnow()))
     await session.commit()
     return int(res.rowcount or 0)
 

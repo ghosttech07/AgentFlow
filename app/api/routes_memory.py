@@ -53,5 +53,13 @@ async def delete_memory(memory_id: uuid.UUID, actor: str = "admin", session: Asy
 
 
 @router.post("/purge-expired", dependencies=[Depends(require_admin_role)])
-async def purge_expired(session: AsyncSession = Depends(get_session)) -> dict[str, int]:
-    return {"purged": await memory_service.purge_expired(session)}
+async def purge_expired(session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    """A team admin purges their own team's expired memories; only a global admin purges every team (logged)."""
+    p = current()
+    prefix = None if p.is_global else access.team_prefix(p.team_id)
+    purged = await memory_service.purge_expired(session, prefix)
+    if prefix is None:
+        import logging
+
+        logging.getLogger(__name__).warning("memory.global_purge by=%s purged=%d", p.name or p.kind, purged)
+    return {"purged": purged, "scope": "all teams" if prefix is None else "your team"}

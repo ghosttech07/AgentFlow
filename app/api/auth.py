@@ -23,14 +23,37 @@ from app.db.session import get_session
 from app.governance.principal import SYSTEM, Principal, hash_key, set_current
 from app.models.governance import Team, User
 
+SESSION_COOKIE = "af_session"
+CSRF_COOKIE = "af_csrf"
+SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
+
+
+async def _user_principal(session: AsyncSession, user: User, method: str) -> Principal:
+    team = await session.get(Team, user.team_id) if user.team_id else None
+    return Principal(kind="user", role=user.role, name=user.name, user_id=user.id, team_id=user.team_id,
+                     team_name=team.name if team else None, auth_method=method)
+
 
 async def get_principal(
+    request: Request,
     x_api_key: str | None = Header(default=None, description="ADMIN_API_KEY or your own user key."),
+    x_csrf_token: str | None = Header(default=None, description="Required with the session cookie on POST/PATCH/DELETE."),
     settings: Settings = Depends(get_settings),
     session: AsyncSession = Depends(get_session),
 ) -> AsyncIterator[Principal]:
     admin = settings.admin_api_key
-    if x_api_key:
+    cookie = request.cookies.get(SESSION_COOKIE)
+    if not x_api_key and cookie:  # browser login (Part 12 Step 0)
+        from app.governance import sessions
+
+        found = await sessions.resolve(session, cookie, settings)
+        if found is None:
+            raise UnauthorizedError("Your session has expired. Please sign in again.")
+        row, user = found
+        if request.method not in SAFE_METHODS and not sessions.csrf_ok(row, x_csrf_token):
+            raise ForbiddenError("Missing or invalid X-CSRF-Token header")
+        p = await _user_principal(session, user, "session")
+    elif x_api_key:
         if admin is not None and hmac.compare_digest(x_api_key.encode(), admin.get_secret_value().encode()):
             p = Principal(kind="admin_key", role="admin")
         else:
@@ -38,10 +61,8 @@ async def get_principal(
                                                            User.active.is_(True)))
             if user is None:
                 raise UnauthorizedError("Missing or invalid X-API-Key header")
-            team = await session.get(Team, user.team_id) if user.team_id else None
-            p = Principal(kind="user", role=user.role, name=user.name, user_id=user.id, team_id=user.team_id,
-                          team_name=team.name if team else None)
-    elif await session.scalar(select(exists().where(User.id.is_not(None)))):
+            p = await _user_principal(session, user, "api_key")
+    elif settings.auth_mode == "required" or await session.scalar(select(exists().where(User.id.is_not(None)))):
         p = Principal(kind="anonymous", role=None)
     elif admin is None:
         p = Principal(kind="open", role="admin")

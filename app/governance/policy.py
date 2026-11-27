@@ -143,11 +143,15 @@ class Policies:
     def evaluate(self, scope: str | None = None, **ctx: Any) -> Requirement:
         """scope "task": only rules without a tool condition (a whole task); "tool": only tool rules (one call)."""
         req = Requirement()
-        for r in self.rules:
-            if scope == "task" and r.is_tool_rule or scope == "tool" and not r.is_tool_rule:
-                continue
-            if self._match(r, ctx):
-                req.merge(r)
+        try:
+            for r in self.rules:
+                if scope == "task" and r.is_tool_rule or scope == "tool" and not r.is_tool_rule:
+                    continue
+                if self._match(r, ctx):
+                    req.merge(r)
+        except Exception:  # FAIL CLOSED: a broken rule never lets an action through unchecked
+            logger.exception("policy.evaluation_error scope=%s", scope)
+            return Requirement(require=True, deny=scope == "tool", rules=["policy_error"])
         return req
 
     def task_rules(self) -> list[Rule]:

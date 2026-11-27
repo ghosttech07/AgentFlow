@@ -27,6 +27,7 @@ class Principal:
     user_id: uuid.UUID | None = None
     team_id: uuid.UUID | None = None
     team_name: str | None = None
+    auth_method: str | None = None  # api_key | session | admin_key | none
 
     def at_least(self, role: str) -> bool:
         return self.role is not None and ROLE_RANK[self.role] >= ROLE_RANK[role]

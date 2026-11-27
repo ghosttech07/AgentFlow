@@ -6,13 +6,14 @@ import logging
 import uuid
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.auth import get_principal, require_admin_role
+from app.api.auth import CSRF_COOKIE, SESSION_COOKIE, get_principal, require_admin_role
+from app.config import Settings, get_settings
 from app.core.errors import ConflictError, ForbiddenError, NotFoundError
 from app.db.session import get_session
 from app.governance.policy import SAFETY_FLOOR, get_policies
@@ -32,6 +33,13 @@ class UserCreate(BaseModel):
     name: str = Field(pattern=NAME)
     role: Literal["viewer", "operator", "approver", "admin"]
     team: str | None = Field(default=None, description="Team name; omitted = global (only the admin key may).")
+    password: str | None = Field(default=None, min_length=12, max_length=256,
+                                 description="Optional dashboard password (argon2id); the API key works either way.")
+
+
+class LoginRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=256)
 
 
 def _user(u: User, teams: dict[uuid.UUID, str]) -> dict[str, Any]:
@@ -49,9 +57,45 @@ async def me(p: Principal = Depends(get_principal)) -> dict[str, Any]:
     return {"kind": p.kind, "name": p.name, "role": p.role, "team": p.team_name, "sees_all_teams": p.is_global}
 
 
+def _cookie_secure(settings: Settings) -> bool:
+    return settings.session_cookie_secure if settings.session_cookie_secure is not None else (
+        settings.app_env == "production")
+
+
+@router.post("/auth/login")
+async def login(body: LoginRequest, request: Request, response: Response, settings: Settings = Depends(get_settings),
+                session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    """Dashboard sign-in. Same message for a wrong name or password; repeated failures lock (429)."""
+    from app.governance import sessions
+
+    ip = request.client.host if request.client else None
+    token, csrf, user = await sessions.login(session, body.name, body.password, ip, settings)
+    secure = _cookie_secure(settings)
+    age = settings.session_max_hours * 3600
+    response.set_cookie(SESSION_COOKIE, token, httponly=True, secure=secure, samesite="strict", max_age=age, path="/")
+    response.set_cookie(CSRF_COOKIE, csrf, httponly=False, secure=secure, samesite="strict", max_age=age, path="/")
+    logger.info("auth.login name=%s", user.name)
+    return {"name": user.name, "role": user.role, "csrf_token": csrf}
+
+
+@router.post("/auth/logout", status_code=204)
+async def logout(request: Request, response: Response, session: AsyncSession = Depends(get_session)) -> None:
+    from app.governance import sessions
+
+    token = request.cookies.get(SESSION_COOKIE)
+    if token:
+        await sessions.logout(session, token)
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    response.delete_cookie(CSRF_COOKIE, path="/")
+
+
 @router.get("/admin/policies")
-async def policies(_: Principal = Depends(require_admin_role)) -> dict[str, Any]:
-    return {"rules": [r.model_dump(exclude_none=True) for r in get_policies().rules], "safety_floor": list(SAFETY_FLOOR)}
+async def policies(_: Principal = Depends(require_admin_role),
+                   session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    from app.governance.eligibility import policy_warnings
+
+    return {"rules": [r.model_dump(exclude_none=True) for r in get_policies().rules], "safety_floor": list(SAFETY_FLOOR),
+            "warnings": await policy_warnings(session)}
 
 
 @router.post("/admin/teams", status_code=201)
@@ -70,9 +114,10 @@ async def create_team(body: TeamCreate, p: Principal = Depends(require_admin_rol
 
 
 @router.get("/admin/teams")
-async def list_teams(_: Principal = Depends(require_admin_role),
+async def list_teams(p: Principal = Depends(require_admin_role),
                      session: AsyncSession = Depends(get_session)) -> list[dict[str, Any]]:
-    return [{"id": str(i), "name": n} for i, n in (await _teams(session)).items()]
+    """A global admin sees every team; a team admin only their own (no cross-team names)."""
+    return [{"id": str(i), "name": n} for i, n in (await _teams(session)).items() if p.is_global or i == p.team_id]
 
 
 @router.post("/admin/users", status_code=201)
@@ -82,12 +127,15 @@ async def create_user(body: UserCreate, p: Principal = Depends(require_admin_rol
     team_id = None
     if body.team:
         team_id = await session.scalar(select(Team.id).where(Team.name == body.team))
-        if team_id is None:
+        if team_id is None and p.is_global:
             raise NotFoundError(f"Team '{body.team}' not found")
-    if not p.is_global and team_id != p.team_id:
+    if not p.is_global and team_id != p.team_id:  # same answer for an unknown and another team's name
         raise ForbiddenError("A team admin can only add users to their own team")
     key = new_key()
-    user = User(name=body.name, role=body.role, team_id=team_id, api_key_hash=hash_key(key))
+    from app.governance.sessions import hash_password
+
+    user = User(name=body.name, role=body.role, team_id=team_id, api_key_hash=hash_key(key),
+                password_hash=hash_password(body.password) if body.password else None)
     session.add(user)
     try:
         await session.commit()

@@ -8,12 +8,13 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from app.agents import AgentInput, AgentResult, create_agent, list_agents
+from app.api.auth import require_creator, require_viewer
 from app.config import Settings, get_settings
 from app.core.errors import NotFoundError
 from app.llm import LLMClient, get_llm_client
 from app.schemas.common import ErrorResponse
 
-router = APIRouter(prefix="/agents", tags=["agents"])
+router = APIRouter(prefix="/agents", tags=["agents"], dependencies=[Depends(require_viewer)])
 
 
 class AgentInfo(BaseModel):
@@ -39,6 +40,7 @@ async def get_agents() -> list[dict[str, Any]]:
 
 @router.post(
     "/{agent_type}/run",
+    dependencies=[Depends(require_creator)],  # spends LLM quota
     response_model=AgentResult,
     responses={
         404: {"model": ErrorResponse, "description": "Unknown agent (or disabled in production)"},

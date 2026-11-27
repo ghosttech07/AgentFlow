@@ -92,6 +92,32 @@ async def _apply_policy(session: AsyncSession, wf: Workflow, approval: Approval,
     if req.rules:
         approval.request_payload = {**(approval.request_payload or {}), "policy": {
             "rules": req.rules, "required_approvals": req.approvals, "approver_role": req.approver_role}}
+    await check_satisfiable(session, wf, approval)
+
+
+async def check_satisfiable(session: AsyncSession, wf: Workflow, approval: Approval) -> None:
+    """Not enough eligible people -> an immediate event + escalation to admins + a clear card message. Never a
+    silent wait (Part 12 Step 0). Only meaningful once users exist."""
+    from app.governance import eligibility
+
+    if not await eligibility.users_exist(session):
+        return
+    need = approval.required_approvals
+    people = await eligibility.eligible_approvers(session, wf.team_id, approval.approver_role,
+                                                  exclude=wf.created_by if need >= 2 else None)
+    if len(people) >= need:
+        return
+    message = f"needs {need} approver{'s' if need > 1 else ''}, only {len(people)} eligible"
+    admins = await eligibility.admins_for(session, wf.team_id)
+    approval.request_payload = {**(approval.request_payload or {}), "unsatisfiable": message,
+                                "escalated_to": admins}
+    await session.flush()
+    for event_type, extra in ((EventType.APPROVAL_UNSATISFIABLE, {"eligible": people}),
+                              (EventType.APPROVAL_ESCALATED, {"to": admins})):
+        record_event(session, workflow_id=wf.id, task_id=approval.task_id, event_type=event_type,
+                     payload={"approval_id": str(approval.id), "message": message, "needs": need, **extra})
+    logger.warning("approval.unsatisfiable workflow=%s approval=%s %s; escalated to %s", wf.id, approval.id, message,
+                   admins)
 
 
 def _voter(actor: str) -> str:

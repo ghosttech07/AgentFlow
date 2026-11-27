@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from app.api.auth import require_viewer
 from app.config import get_settings
 from app.tools.config import approval_mode, disabled_reason, get_tools_config
 from app.tools.registry import all_tools
 
-router = APIRouter(tags=["tools"])
+router = APIRouter(tags=["tools"], dependencies=[Depends(require_viewer)])
 
 
 @router.get("/tools")

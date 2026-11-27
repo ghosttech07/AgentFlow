@@ -137,6 +137,27 @@ async def request_id_middleware(request: Request, call_next):  # noqa: ANN001, A
     return response
 
 
+_CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; "
+        "form-action 'self'")
+
+
+async def security_headers_middleware(request: Request, call_next):  # noqa: ANN001, ANN201
+    """Part 12 Step 0: browser hardening on every response (the dashboard's inline script needs 'unsafe-inline')."""
+    response = await call_next(request)
+    h = response.headers
+    h.setdefault("X-Content-Type-Options", "nosniff")
+    h.setdefault("X-Frame-Options", "DENY")
+    h.setdefault("Referrer-Policy", "no-referrer")
+    h.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    if not request.url.path.startswith(("/docs", "/redoc")):  # Swagger UI loads its assets from a CDN
+        h.setdefault("Content-Security-Policy", _CSP)
+    h.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+    if get_settings().app_env == "production":
+        h.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
     setup_logging(settings.log_level)
@@ -149,6 +170,13 @@ def create_app() -> FastAPI:
     )
     register_exception_handlers(app)
     app.middleware("http")(request_id_middleware)
+    app.middleware("http")(security_headers_middleware)
+    if settings.cors_allowed_origins:  # default: no CORS headers at all = same-origin only
+        from fastapi.middleware.cors import CORSMiddleware
+
+        app.add_middleware(CORSMiddleware, allow_origins=settings.cors_allowed_origins, allow_credentials=True,
+                           allow_methods=["GET", "POST", "PATCH", "DELETE"],
+                           allow_headers=["Content-Type", "X-API-Key", "X-CSRF-Token", "X-Request-ID"])
     app.include_router(routes_health.router)
     app.include_router(routes_workflows.router)
     app.include_router(routes_agents.router)

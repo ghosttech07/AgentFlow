@@ -221,7 +221,13 @@ details.more summary { cursor: pointer; font-weight: 600; color: var(--ink-2); f
     <details class="settings">
       <summary><svg class="i"><use href="#i-gear"/></svg>Settings</summary>
       <label class="field">Your name (shown on approvals)<input id="actor" autocomplete="name" placeholder="admin"></label>
-      <label class="field">Your access key (optional)<input id="apikey" type="password" autocomplete="off"></label>
+      <form id="loginform" class="login" autocomplete="on">
+        <label class="field">Name<input id="loginname" autocomplete="username" required></label>
+        <label class="field">Password<input id="loginpw" type="password" autocomplete="current-password" required></label>
+        <div class="actions"><button class="btn primary" type="submit">Sign in</button>
+          <button class="btn" type="button" id="logoutbtn">Sign out</button></div>
+      </form>
+      <label class="field">Or an access key (optional)<input id="apikey" type="password" autocomplete="off"></label>
       <p class="hint">Your personal key from your admin (or the server's ADMIN_API_KEY). Leave empty on a local server with no users. This is not an AI key: AI keys stay in the server's .env file. Kept in this browser only.</p>
       <p class="hint" id="whoami" aria-live="polite"></p>
     </details>
@@ -282,6 +288,15 @@ async function whoami() {  /* Part 11: show who the key belongs to; a signed-in 
   } catch (e) { $("whoami").textContent = e.message; }
 }
 $("apikey").addEventListener("change", whoami);
+$("loginform").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  try {
+    await api("POST", "/auth/login", { name: $("loginname").value, password: $("loginpw").value });
+    $("loginpw").value = "";
+    whoami();
+  } catch (e) { $("whoami").textContent = e.message; }
+});
+$("logoutbtn").addEventListener("click", async () => { try { await api("POST", "/auth/logout"); } catch {} whoami(); });
 whoami();
 const actor = () => $("actor").value.trim() || "admin";
 
@@ -295,6 +310,8 @@ const announce = (m) => { $("announcer").textContent = m; };
 async function api(method, path, body) {
   const headers = { "Content-Type": "application/json" };
   if ($("apikey").value) headers["X-API-Key"] = $("apikey").value;
+  const csrf = (document.cookie.match(/(?:^|; )af_csrf=([^;]*)/) || [])[1];  /* Part 12: CSRF for cookie sessions */
+  if (csrf && method !== "GET") headers["X-CSRF-Token"] = decodeURIComponent(csrf);
   const resp = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   const data = resp.status === 204 ? null : await resp.json().catch(() => null);
   if (!resp.ok) {
@@ -502,12 +519,15 @@ function reportHtml(wf) {
 function approvalHtml(a) {  /* Part 11: who still has to approve, and which policy asked for it */
   const html = approvalBody(a);
   const votes = a.votes || [];
-  if ((a.required_approvals || 1) <= 1 && !(a.policy_rules || []).length) return html;
+  const p0 = a.request_payload || {};
+  const warn = p0.unsatisfiable ? `<p class="hint" role="alert"><strong>Cannot be approved as is: ${esc(p0.unsatisfiable)}.</strong> `
+    + `Escalated to ${esc((p0.escalated_to || []).join(", ") || "the admins")}.</p>` : "";
+  if ((a.required_approvals || 1) <= 1 && !(a.policy_rules || []).length) return warn ? html.replace("</h3>", "</h3>" + warn) : html;
   const line = `<p class="hint">Needs ${esc(String(a.required_approvals || 1))} different approvers`
     + (a.approver_role ? ` (role ${esc(a.approver_role)} or higher)` : "")
     + ` &middot; ${esc(String(votes.length))} so far${votes.length ? ": " + votes.map((v) => esc(v.voter)).join(", ") : ""}`
     + ((a.policy_rules || []).length ? ` &middot; policy: ${a.policy_rules.map(esc).join(", ")}` : "") + `</p>`;
-  return html.replace("</h3>", "</h3>" + line);
+  return html.replace("</h3>", "</h3>" + warn + line);
 }
 
 function approvalBody(a) {

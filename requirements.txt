@@ -25,6 +25,11 @@ trafilatura>=2.0,<3.0
 sqlglot>=30.35,<31.0
 beautifulsoup4>=4.15,<5.0
 
+# --- Security + trust (Parts 11-12): password hashing, signatures/encryption, PDF evidence report ---
+argon2-cffi>=25.1,<26.0
+cryptography>=46,<51
+reportlab>=4.5,<5.0
+
 # --- Config / schemas ---
 pydantic>=2.7,<3.0
 pydantic-settings>=2.3,<3.0

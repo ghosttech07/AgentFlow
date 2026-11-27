@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.auth import require_ops_view
+from app.api.auth import require_ops_view, require_viewer
 from app.db.session import get_session
 from app.llm import LLMClient, get_llm_client
 from app.llm.router import ModelRouter
@@ -16,7 +16,7 @@ from app.services import provider_service
 router = APIRouter(tags=["providers"])
 
 
-@router.get("/providers")
+@router.get("/providers", dependencies=[Depends(require_viewer)])
 async def providers(llm: LLMClient = Depends(get_llm_client)) -> dict[str, Any]:
     """Configured providers, their route entries, circuit state and today's usage vs quota.
     API keys are never returned: only `key_present`."""

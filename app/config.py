@@ -103,6 +103,16 @@ class Settings(BaseSettings):
     # Human controls (Part 6)
     # Required in production; in development an unset key means the control API is open.
     admin_api_key: SecretStr | None = None
+    # Part 11/12 auth. off = development behaviour (open until the first user exists); required = always a
+    # credential. Production refuses off.
+    auth_mode: Literal["off", "required"] | None = None  # None = off in development/test, required otherwise
+    session_idle_minutes: int = Field(default=30, ge=1)
+    session_max_hours: int = Field(default=12, ge=1)
+    session_cookie_secure: bool | None = None  # None = Secure in production only (http://localhost in dev)
+    login_max_failures: int = Field(default=5, ge=1)
+    login_failure_window_minutes: int = Field(default=15, ge=1)
+    login_lockout_minutes: int = Field(default=15, ge=1)
+    cors_allowed_origins: list[str] = Field(default_factory=list)  # empty = same-origin only
     approval_timeout_hours: float = Field(default=24.0, ge=0)  # 0 = approvals never expire
     approval_webhook_url: str | None = None
     publish_dir: Path = PROJECT_ROOT / "outputs" / "published"
@@ -158,7 +168,18 @@ class Settings(BaseSettings):
     def _production_needs_admin_key(self) -> Settings:
         if self.app_env == "production" and self.admin_api_key is None:
             raise ValueError("ADMIN_API_KEY is required when APP_ENV=production")
+        if self.auth_mode is None:
+            self.auth_mode = "off" if self.app_env in ("development", "test") else "required"
+        if self.app_env == "production" and self.auth_mode == "off":
+            raise ValueError("AUTH_MODE=off is only allowed in development (APP_ENV=production needs AUTH_MODE=required)")
         return self
+
+    @field_validator("cors_allowed_origins", mode="before")
+    @classmethod
+    def _split_origins(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [o.strip() for o in value.split(",") if o.strip()]
+        return value
 
     @field_validator("gemini_api_key", mode="before")
     @classmethod

@@ -62,3 +62,10 @@ class ForbiddenError(AppError):
 
     status_code = 403
     code = "forbidden"
+
+
+class RateLimitedError(AppError):
+    """Too many attempts (login lockout, backpressure). Returned as HTTP 429."""
+
+    status_code = 429
+    code = "rate_limited"
