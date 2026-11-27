@@ -134,7 +134,10 @@ async def test_graph_endpoint(app: FastAPI, client: AsyncClient) -> None:
 
     assert [node["key"] for node in graph["nodes"]] == [task["key"] for task in GOOD["tasks"]]
     assert graph["nodes"][0] == {"key": "research_india", "name": "Research India",
-                                 "agent_type": "researcher", "status": "PENDING", "requires_approval": False}
+                                 "agent_type": "researcher", "status": "PENDING", "requires_approval": False,
+                                 # Part 10 fields (defaults for a plain task)
+                                 "run_if": None, "join": "all_succeeded", "skip_reason": None, "loop_name": None,
+                                 "iteration": 1, "base_key": "research_india"}
     assert {"from": "compare", "to": "write_report"} in graph["edges"]
     assert len(graph["edges"]) == 6
     assert graph["execution_levels"] == [["research_china", "research_india"], ["compare"],

@@ -36,8 +36,8 @@ from app.engine.scheduler import Claim, task_metrics
 from app.llm.base import LLMClient
 from app.llm.context import CallContext, use_context
 from app.llm.errors import BudgetPause, LLMError
-from app.tools.loop import ToolApprovalNeeded
 from app.models.task import Task
+from app.tools.loop import ToolApprovalNeeded
 
 logger = logging.getLogger(__name__)
 
@@ -132,8 +132,12 @@ async def _run_agent(
         # Part 9: wire a ToolRuntime when the agent has effective tools.
         if task_id is not None:
             agent.tool_runtime = await _build_tool_runtime(agent, session_factory, workflow_id, task_id, key,
-                                                           settings)
-        return await agent.run(agent_input)
+                                                           settings, agent_input)
+        result = await agent.run(agent_input)
+        if agent_input.memory_ids:  # Part 10: a tainted memory taints the reader (memory poisoning stays gated)
+            result.memories_used = list(agent_input.memory_ids)
+            result.tainted = result.tainted or agent_input.memory_tainted
+        return result
 
     return await asyncio.wait_for(run(), timeout=_task_timeout(agent_type, settings))
 
@@ -159,7 +163,8 @@ def _task_timeout(agent_type: str, settings: Settings) -> float:
 
 
 async def _build_tool_runtime(agent: Any, session_factory: async_sessionmaker[AsyncSession],
-                              workflow_id: uuid.UUID, task_id: uuid.UUID, key: str, settings: Settings) -> Any:
+                              workflow_id: uuid.UUID, task_id: uuid.UUID, key: str, settings: Settings,
+                              agent_input: AgentInput | None = None) -> Any:
     """ToolRuntime for an agent with effective tools (None otherwise): the running attempt number, upstream
     taint and the transcript of earlier attempts to resume from (all read from the DB)."""
     import app.tools.catalog  # noqa: F401  (registers every tool)
@@ -180,8 +185,11 @@ async def _build_tool_runtime(agent: Any, session_factory: async_sessionmaker[As
         resume = await resume_info(session, task_id, attempt_number)
     return ToolRuntime(session_factory=session_factory, config=tools_config.get_tools_config(), settings=settings,
                        workflow_id=workflow_id, task_id=task_id, task_key=key, attempt_number=attempt_number,
-                       tools=tools, tainted_from=tainted_from, resume=resume, inherited_sources=sources,
-                       inherited_warnings=warnings)
+                       tools=tools, tainted_from=tainted_from + (["memory"] if agent_input and agent_input.memory_tainted
+                                                                  else []),
+                       resume=resume, inherited_sources=sources, inherited_warnings=warnings,
+                       private_context=bool(agent_input and agent_input.memory_private),
+                       memory_sources=list(agent_input.memory_sources) if agent_input else [])
 
 
 async def _earlier_untrusted(session: AsyncSession, workflow_id: uuid.UUID,
@@ -278,6 +286,16 @@ async def _save(
                        "latency_ms": result.latency_ms, "input_tokens": result.input_tokens,
                        "output_tokens": result.output_tokens},
             )
+            if result.memories_used:
+                task.metrics = {**(task.metrics or {}), "memories_used": result.memories_used}
+                record_event(session, workflow_id=task.workflow_id, task_id=task.id, event_type=EventType.MEMORY_USED,
+                             payload={"task_key": task.key, "memory_ids": result.memories_used})
+            from app.models.workflow import Workflow as _Wf
+            from app.services import memory_service
+
+            wf_row = await session.get(_Wf, task.workflow_id)
+            if wf_row is not None:
+                await memory_service.write_from_task(session, wf_row, task, settings)
             verified = (result.tool_summary or {}).get("sources_verified")
             if verified is not None:
                 record_event(session, workflow_id=task.workflow_id, task_id=task.id,

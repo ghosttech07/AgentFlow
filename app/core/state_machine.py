@@ -65,31 +65,35 @@ T = TaskStatus
 WORKFLOW_TRANSITIONS: dict[WorkflowStatus, frozenset[WorkflowStatus]] = {
     W.PENDING: frozenset({W.PLANNING, W.RUNNING, W.FAILED, W.CANCELLED}),
     W.PLANNING: frozenset({W.PENDING, W.RUNNING, W.FAILED, W.CANCELLED}),
-    W.RUNNING: frozenset({W.PAUSED, W.AWAITING_APPROVAL, W.COMPLETED, W.FAILED, W.CANCELLED}),
-    W.PAUSED: frozenset({W.RUNNING, W.AWAITING_APPROVAL, W.FAILED, W.CANCELLED}),
-    W.AWAITING_APPROVAL: frozenset({W.RUNNING, W.PAUSED, W.FAILED, W.CANCELLED}),
+    W.RUNNING: frozenset({W.PAUSED, W.AWAITING_APPROVAL, W.COMPLETED, W.FAILED, W.CANCELLED, W.REPLANNING}),
+    W.PAUSED: frozenset({W.RUNNING, W.AWAITING_APPROVAL, W.FAILED, W.CANCELLED, W.REPLANNING}),
+    W.AWAITING_APPROVAL: frozenset({W.RUNNING, W.PAUSED, W.FAILED, W.CANCELLED, W.REPLANNING}),
+    # Part 10: patching the plan mid-run; back to RUNNING when applied, FAILED when it can't be fixed.
+    # Back to where it came from (RUNNING / PAUSED / FAILED), or FAILED when an automatic re-plan can't be fixed.
+    W.REPLANNING: frozenset({W.RUNNING, W.PAUSED, W.FAILED, W.CANCELLED}),
     W.COMPLETED: frozenset(),
     # Exception to terminality: resume, or re-plan (planning_service only allows it with 0 tasks).
-    W.FAILED: frozenset({W.RUNNING, W.PLANNING, W.CANCELLED}),
+    W.FAILED: frozenset({W.RUNNING, W.PLANNING, W.CANCELLED, W.REPLANNING}),
     W.CANCELLED: frozenset(),
 }
 
 TASK_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
-    T.PENDING: frozenset({T.READY, T.SKIPPED, T.CANCELLED}),
-    T.READY: frozenset({T.RUNNING, T.AWAITING_APPROVAL, T.SKIPPED, T.CANCELLED}),
+    T.PENDING: frozenset({T.READY, T.SKIPPED, T.CANCELLED, T.FAILED, T.SUPERSEDED}),  # FAILED: condition_error
+    T.READY: frozenset({T.RUNNING, T.AWAITING_APPROVAL, T.SKIPPED, T.CANCELLED, T.SUPERSEDED}),
     T.AWAITING_APPROVAL: frozenset({T.READY, T.FAILED, T.SKIPPED, T.CANCELLED}),
     # AWAITING_APPROVAL (Part 9): suspended mid tool loop until a human decides on one tool call.
     T.RUNNING: frozenset({T.SUCCEEDED, T.FAILED, T.RETRYING, T.READY, T.AWAITING_APPROVAL, T.CANCELLED}),
     T.RETRYING: frozenset({T.READY, T.RUNNING, T.FAILED, T.CANCELLED}),
     T.SUCCEEDED: frozenset(),
-    T.FAILED: frozenset({T.RETRYING, T.PENDING}),  # exception to terminality: retry/recovery
+    T.FAILED: frozenset({T.RETRYING, T.PENDING, T.SUPERSEDED}),  # retry/recovery; SUPERSEDED by a re-plan
     T.CANCELLED: frozenset(),
     T.SKIPPED: frozenset(),
+    T.SUPERSEDED: frozenset(),
 }
 
 # States that end an entity's run (completed_at is stamped on entry).
 WORKFLOW_FINISHED_STATES = frozenset({W.COMPLETED, W.FAILED, W.CANCELLED})
-TASK_FINISHED_STATES = frozenset({T.SUCCEEDED, T.FAILED, T.CANCELLED, T.SKIPPED})
+TASK_FINISHED_STATES = frozenset({T.SUCCEEDED, T.FAILED, T.CANCELLED, T.SKIPPED, T.SUPERSEDED})
 
 # Truly terminal states: no outgoing transitions at all.
 WORKFLOW_TERMINAL_STATES = frozenset(s for s, nxt in WORKFLOW_TRANSITIONS.items() if not nxt)
@@ -105,9 +109,10 @@ def allowed_controls(status: WorkflowStatus) -> dict[str, bool]:
     """Which control actions are allowed now (GET /workflows/{id} `controls`), from the table above."""
     status = WorkflowStatus(status)
     return {
-        "can_pause": can_transition_workflow(status, W.PAUSED),
+        "can_pause": status is not W.REPLANNING and can_transition_workflow(status, W.PAUSED),
         "can_resume": status is W.PAUSED,  # the only state a resume starts from
         "can_cancel": can_transition_workflow(status, W.CANCELLED),
+        "can_replan": status in (W.RUNNING, W.AWAITING_APPROVAL, W.PAUSED, W.FAILED),
         "can_retry": status is W.FAILED and can_transition_workflow(status, W.RUNNING),
     }
 

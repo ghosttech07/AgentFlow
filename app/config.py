@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from functools import lru_cache
-from pathlib import Path
-from typing import Annotated, Literal
-
 import os
 import secrets
 import socket
+from functools import lru_cache
+from pathlib import Path
+from typing import Annotated, Literal
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -114,6 +113,19 @@ class Settings(BaseSettings):
     max_tool_output_chars: int = Field(default=4000, ge=200)
     tool_loop_timeout_seconds: float = Field(default=900.0, gt=0)  # replaces TASK_TIMEOUT for tool agents
     tool_result_reuse_seconds: int = Field(default=3600, ge=0)  # reads reused from the journal this long
+    # Part 10 exfiltration guard: caps for reads in tainted / private-data attempts.
+    exfil_max_url_length: int = Field(default=500, ge=50)
+    exfil_max_query_chars: int = Field(default=200, ge=0)
+
+    # Adaptive workflows (Part 10)
+    max_loop_iterations: int = Field(default=5, ge=1, le=20)
+    max_replans: int = Field(default=2, ge=0, le=10)
+    replan_max_new_tasks: int = Field(default=5, ge=1, le=20)
+    replan_auto_approve_max_tasks: int = Field(default=2, ge=0)
+    memory_enabled: bool = True
+    memory_top_k: int = Field(default=5, ge=0, le=50)
+    memory_fact_ttl_days: int = Field(default=30, ge=1)
+    memory_lesson_ttl_days: int = Field(default=180, ge=1)
     workspaces_dir: Path = PROJECT_ROOT / "outputs" / "workspaces"
     outbox_dir: Path = PROJECT_ROOT / "outputs" / "outbox"
     sample_data_url: str = "postgresql+asyncpg://agentflow_reader:reader@localhost:5432/agentflow_sample"

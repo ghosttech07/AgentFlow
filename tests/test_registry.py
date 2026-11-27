@@ -5,8 +5,7 @@ from collections.abc import Iterator
 import pytest
 from pydantic import BaseModel
 
-from app.agents import BaseAgent, create_agent, get_agent_class, list_agents, register_agent
-from app.agents import registry
+from app.agents import BaseAgent, create_agent, get_agent_class, list_agents, register_agent, registry
 from app.agents.registry import UnknownAgentError
 from app.llm.fake_client import FakeLLMClient
 

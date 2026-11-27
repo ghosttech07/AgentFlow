@@ -1,6 +1,6 @@
 """Run every AgentFlow demo in turn (fake model, offline, free) and print one PASS/FAIL table.
 
-    python scripts/demo.py              # all four demos (about 3-5 minutes)
+    python scripts/demo.py              # all five demos (about 5-7 minutes)
     python scripts/demo.py crash tools  # only some of them
 
 Stop any other AgentFlow server that uses the same database first: each demo starts its own on port 8765.
@@ -19,6 +19,7 @@ DEMOS = {
     "controls": (["controls_demo.py"], "pause/resume, approve with an edit, reject + skip, cancel while running"),
     "budget": (["budget_demo.py"], "budget limit pauses the workflow, raise it, resume, complete"),
     "tools": (["tools_demo.py"], "tools + approvals; crash right after an email, exactly one email; injection blocked"),
+    "adaptive": (["adaptive_demo.py"], "loop 5 -> v2 -> 9, branches, re-plan, crash during v2, memory, exfil held"),
 }
 
 

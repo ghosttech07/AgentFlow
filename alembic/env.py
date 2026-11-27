@@ -15,10 +15,10 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import create_async_engine
 
+import app.models  # noqa: F401  (registers all tables on Base.metadata)
 from alembic import context
 from app.config import get_settings
 from app.db.base import Base
-import app.models  # noqa: F401  (registers all tables on Base.metadata)
 
 config = context.config
 

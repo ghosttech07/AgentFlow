@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from app.agents.base import AgentInput, BaseAgent
 from app.agents.prompts import today
 from app.agents.registry import get_agent_class, register_agent, task_agent_types
+from app.core.adaptive_spec import JoinMode, LoopSpec
 
 
 class PlannedTask(BaseModel):
@@ -29,11 +30,20 @@ class PlannedTask(BaseModel):
     )
     requires_approval: bool = Field(default=False)
     rationale: str = Field(description="One short sentence: why this task exists.")
+    run_if: str | None = Field(default=None, description="Optional condition over this task's dependencies, e.g. "
+                               "\"research_china.output.confidence == 'low'\". False -> the task is skipped.")
+    join: JoinMode = Field(default="all_succeeded", description="What the task needs from its dependencies: "
+                           "all_succeeded (default), any_succeeded, all_done (skipped/failed ones tolerated).")
+    replan_if: str | None = Field(default=None, description="Optional condition over this task's own output; true "
+                                  "-> the planner adds tasks (e.g. \"len(research_x.output.gaps) > 3\").")
 
 
 class Plan(BaseModel):
     plan_summary: str = Field(description="2-3 sentences describing the approach.")
     tasks: list[PlannedTask]
+    loops: list[LoopSpec] = Field(default_factory=list, description="Bounded write->review feedback loops.")
+    replan_on_failure: bool = Field(default=False, description="true: if a task fails for good, the planner may add "
+                                    "replacement tasks instead of failing the workflow (recommended).")
 
 
 EXAMPLE_PLAN = {
@@ -97,6 +107,10 @@ RULES
 10. Use the publisher ONLY when the goal explicitly asks to publish, post or share the result. It is always the LAST task and depends on the reviewer and on the writer task whose content it publishes. Never add it otherwise.
 11. Fill every field, including a one-sentence rationale per task.
 12. Agents list their TOOLS. Use the communicator ONLY when the goal explicitly asks to send, email or notify someone. It is the LAST task (after the writer, and after the reviewer if there is one); put the recipients exactly as the user gave them into its input ("recipients"). Never invent recipients.
+13. For a quality-sensitive deliverable (writer followed by reviewer) add ONE loop in "loops": body [writer_key, reviewer_key], until e.g. "<reviewer_key>.output.approved and <reviewer_key>.output.score >= 8", max_iterations 2-3, on_exhausted "continue_with_best", feedback {{"from": reviewer_key, "to": writer_key}}. Loop body keys must be at most 46 characters. Never create cycles in depends_on: the system repeats the loop itself.
+14. Use run_if only when a task is worth running conditionally, e.g. a deeper research task with run_if "research_x.output.confidence == 'low'". It may only reference the task's own dependencies. Use join "any_succeeded" for a task that can proceed when one of alternative branches succeeded.
+15. replan_if (optional) on a research task, e.g. "len(research_x.output.gaps) > 3": the system then asks you for extra tasks.
+16. Set "replan_on_failure": true unless the user asked for a strict, fixed plan.
 
 EXAMPLE OF A GOOD PLAN (parallel research -> analysis -> writing -> review):
 {json.dumps(EXAMPLE_PLAN, indent=2)}"""

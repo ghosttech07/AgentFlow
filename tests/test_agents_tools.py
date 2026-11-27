@@ -17,7 +17,7 @@ from tests.tool_helpers import use_tools
 
 def test_agents_declare_their_tools() -> None:
     assert ResearcherAgent.allowed_tools == ("web_search", "web_fetch")
-    assert AnalystAgent.allowed_tools == ("sql_query", "calculator")
+    assert AnalystAgent.allowed_tools == ("sql_query", "calculator", "web_fetch")  # web_fetch only if tools.yaml grants it
     assert WriterAgent.allowed_tools == ("file_write",)
     assert CommunicatorAgent.allowed_tools == ("send_email", "webhook_post") and CommunicatorAgent.requires_tools
 

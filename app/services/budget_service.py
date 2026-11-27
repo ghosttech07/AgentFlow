@@ -18,12 +18,11 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import Settings
-from app.core.enums import WorkflowStatus
+from app.core.enums import TaskStatus, WorkflowStatus
 from app.core.errors import NotFoundError
 from app.core.events import EventType, record_event
 from app.core.state_machine import transition_workflow
 from app.db.base import utcnow
-from app.core.enums import TaskStatus
 from app.models.task import Task
 from app.models.usage import LLMCall
 from app.models.workflow import Workflow

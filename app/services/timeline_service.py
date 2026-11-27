@@ -72,6 +72,25 @@ def describe(event_type: str, p: dict[str, Any]) -> str:
                                if p.get("kind") == "tool_call" else f"Approval requested for {key}"),
         "task.sources_verified": f"{key} sources checked by code: {p.get('verified')} verified, "
                                  f"{p.get('removed')} removed (never opened)",
+        "task.condition_evaluated": (f"{key}: {p.get('kind', 'run_if')} could not be evaluated ({p.get('error')})"
+                                     if p.get("error") else
+                                     f"{key}: {p.get('kind', 'run_if')} {p.get('expression')} -> {p.get('result')} "
+                                     f"(values {p.get('values')})"),
+        "loop.condition_evaluated": (f"Loop {p.get('loop')} v{p.get('iteration')}: {p.get('expression')} -> "
+                                     f"{p.get('result')} (values {p.get('values')})"),
+        "loop.iteration_started": f"Loop {p.get('loop')}: iteration v{p.get('iteration')} added ({', '.join(p.get('tasks') or [])})",
+        "loop.completed": f"Loop {p.get('loop')} done at v{p.get('iteration')}",
+        "loop.exhausted": (f"Loop {p.get('loop')} used up its iterations ({p.get('reason')}); "
+                           + (f"continuing with v{p.get('chosen_iteration')}" if p.get("chosen_iteration")
+                              else str(p.get("mode")))),
+        "workflow.replan_started": f"Re-planning ({p.get('trigger')}){who}{why}",
+        "workflow.replan_applied": (f"Plan v{p.get('version')} applied: added {', '.join(p.get('added') or []) or 'nothing'}"
+                                    + (f"; superseded {', '.join(p.get('superseded'))}" if p.get("superseded") else "")),
+        "workflow.replan_failed": f"Re-planning failed: {'; '.join((p.get('errors') or [])[:2])}",
+        "workflow.completed_with_failed_branches": (f"Completed with failed branches: "
+                                                    f"{', '.join(b['key'] for b in p.get('failed_branches') or [])}"),
+        "memory.used": f"{key} used {len(p.get('memory_ids') or [])} memories from earlier workflows",
+        "memory.deleted": f"Memory deleted{who}",
         "tool.injection_suspected": f"{key}: suspicious text in {p.get('source')} "
                                     f"({', '.join(p.get('rules') or [])}); flagged, not followed",
         "approval.approved": f"{key} approved{who}"
@@ -107,6 +126,8 @@ async def get_timeline(session: AsyncSession, workflow_id: uuid.UUID) -> dict[st
     spans = [
         {
             "task_key": t.key, "agent_type": t.agent_type, "status": t.status,
+            "loop_name": t.loop_name, "iteration": t.iteration or 1, "base_key": t.base_key or t.key,
+            "skip_reason": t.skip_reason, "memories_used": len((t.metrics or {}).get("memories_used") or []),
             "depends_on": [d.key for d in t.dependencies],
             "fallback_from": (t.metrics or {}).get("fallback_from"),
             "cost_usd": (t.metrics or {}).get("cost_usd"),
@@ -160,6 +181,15 @@ async def get_timeline(session: AsyncSession, workflow_id: uuid.UUID) -> dict[st
         "sources_verified": sum(e.payload.get("verified", 0) for e in events if e.event_type == "task.sources_verified"),
         "sources_removed": sum(e.payload.get("removed", 0) for e in events if e.event_type == "task.sources_verified"),
         "injection_flags": types["tool.injection_suspected"],
+        # Part 10
+        "loop_iterations": sum(max(0, int(s.get("iteration", 1)) - 1) for s in ((wf.context or {}).get("loops") or {}).values()),
+        "replans": types["workflow.replan_applied"],
+        "condition_skips": sum(1 for t in wf.tasks if t.skip_reason == "condition_false"),
+        "failed_branches": len((wf.result or {}).get("failed_branches") or []),
+        "memory_hits": sum(len((t.metrics or {}).get("memories_used") or []) for t in wf.tasks),
+        "llm_calls_saved_by_memory": sum(max(0, 2 - int(((t.metrics or {}).get("tools") or {}).get("tool_calls", 0)))
+                                         for t in wf.tasks if t.agent_type == "researcher"
+                                         and (t.metrics or {}).get("memories_used")),
     }
     end = wf.completed_at
     return {

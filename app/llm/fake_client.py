@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import types as pytypes
-from dataclasses import dataclass
 import typing
+from dataclasses import dataclass
 from typing import Any, Literal, get_args, get_origin
 
 from annotated_types import Ge, MinLen

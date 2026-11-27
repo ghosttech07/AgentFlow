@@ -9,7 +9,9 @@ from tests.engine_helpers import detail, event_types, match, started_workflow, t
 
 # a -> (b, c) -> d ; b fails (after its retries, if retryable); c is slow enough to still be
 # running when the workflow fails.
-GRAPH = [task("a"), task("b", deps=["a"]), task("c", deps=["a"]), task("d", "writer", ["b", "c"])]
+# b fails on its first attempt: retries (Part 5) would add claim cycles and race c's fixed 2 s delay on a busy
+# machine (seen in a 5x run). Retry behaviour has its own tests.
+GRAPH = [task("a"), task("b", deps=["a"], max_attempts=1), task("c", deps=["a"]), task("d", "writer", ["b", "c"])]
 
 
 @pytest.mark.parametrize(

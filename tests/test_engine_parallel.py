@@ -37,7 +37,5 @@ async def test_parallel_vs_sequential(client: AsyncClient, make_engine) -> None:
     (b_start, b_end), (c_start, c_end) = window(sequential["b"]), window(sequential["c"])
     assert b_end <= c_start or c_end <= b_start, "with max_concurrency=1, B and C must not overlap"
     assert t_sequential >= 4.0
-
-    # Parallel saves roughly one task's duration (1 s). Comparing two runs in the same
-    # environment keeps this robust against per-connection overhead on slow machines.
-    assert t_sequential - t_parallel > 0.7, f"parallel {t_parallel:.2f}s vs sequential {t_sequential:.2f}s"
+    # No wall-clock comparison between the two runs: the overlap / no-overlap windows above (stored task
+    # timestamps) prove parallelism; a speed ratio only measures how busy the machine is (it failed on CI).

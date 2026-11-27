@@ -53,7 +53,8 @@ async def test_tavily_first_when_key_present(backends) -> None:  # noqa: ANN001
 
 
 async def test_failing_or_empty_backend_falls_through(backends) -> None:  # noqa: ANN001
-    s = get_settings().model_copy(update={"tavily_api_key": SecretStr("tvly-x")})
+    # Both keys set explicitly: the chain must not depend on what the machine (or CI) has configured.
+    s = get_settings().model_copy(update={"tavily_api_key": SecretStr("tvly-x"), "gemini_api_key": SecretStr("g-x")})
     backends["_behaviour"]["tavily"] = RuntimeError("429 rate limited")
     backends["_behaviour"]["ddgs"] = []  # "No results found" (throttled)
     out = await WebSearchTool().execute(WebSearchArgs(query="q"),

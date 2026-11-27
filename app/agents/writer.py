@@ -15,6 +15,8 @@ class WritingOutput(BaseModel):
     title: str
     content: str = Field(description="The full text in Markdown.")
     word_count: int = Field(ge=0, description="Recomputed by code after generation.")
+    changes_made: list[str] = Field(default_factory=list, description="When revising: what you changed and which "
+                                    "review issue each change addresses. Empty for a first draft.")
 
 
 def count_words(text: str) -> int:
@@ -35,7 +37,10 @@ Rules:
 - Respect any length, tone, format or section requirements in the task input exactly.
 - Use headings, short paragraphs and lists where they help readability.
 - If the provided material is insufficient for part of the request, say so in the text rather than filling the gap.
-- content is Markdown; title is plain text."""
+- content is Markdown; title is plain text.
+- If TASK INPUT has revision_feedback (a review of your previous draft): rewrite the previous draft so that EVERY
+  high and medium severity issue is fixed and the suggestions are considered, keep what was good, and list each
+  change in changes_made ("Added X (fixes: <issue>)")."""
 
     def postprocess(self, data: WritingOutput, response: LLMResponse) -> WritingOutput:
         data.word_count = count_words(data.content)  # models miscount; code is authoritative

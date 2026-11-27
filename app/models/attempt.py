@@ -6,7 +6,19 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import BigInteger, ForeignKey, Identity, Index, Integer, Numeric, String, Text, UniqueConstraint, func, text
+from sqlalchemy import (
+    BigInteger,
+    ForeignKey,
+    Identity,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, utcnow

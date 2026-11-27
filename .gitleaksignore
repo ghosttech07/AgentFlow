@@ -1,0 +1,3 @@
+# Test placeholders, not credentials (they test secret redaction). Approved by the repo owner 2026-11-27.
+fc10d0f44a2ee45342020f92babbe63c9e7ea4da:tests/test_http_request.py:generic-api-key:19
+979b261d1ac2d3ee36579cd34fbeeae7a7163f73:tests/test_tools_framework.py:generic-api-key:122

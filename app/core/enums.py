@@ -14,6 +14,7 @@ class WorkflowStatus(StrEnum):
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
+    REPLANNING = "REPLANNING"  # Part 10: the planner is patching the plan mid-run
 
 
 class TaskStatus(StrEnum):
@@ -26,3 +27,4 @@ class TaskStatus(StrEnum):
     AWAITING_APPROVAL = "AWAITING_APPROVAL"
     CANCELLED = "CANCELLED"
     SKIPPED = "SKIPPED"
+    SUPERSEDED = "SUPERSEDED"  # Part 10: replaced by a re-plan (terminal; never re-run)

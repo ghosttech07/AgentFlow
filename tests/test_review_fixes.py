@@ -9,7 +9,6 @@ import pytest
 from fastapi import FastAPI
 from httpx import AsyncClient
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import get_settings
 from app.llm.circuit import CircuitBreaker

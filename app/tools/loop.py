@@ -18,6 +18,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import urlencode
 
 from pydantic import BaseModel, ValidationError, create_model
 from sqlalchemy import select
@@ -31,8 +32,10 @@ from app.models.tool_call import ToolCall
 from app.tools import journal
 from app.tools.base import WRITE_EFFECTS, Tool, ToolContext, ToolError
 from app.tools.config import CredentialResolver, ToolsConfig, approval_mode
+from app.tools.exfil import ExfilContext, check_read_url, tokens_in, urls_in
 from app.tools.prompting import FINAL_NOW, PROTOCOL, UNTRUSTED_RULE, StepView, steps_section, tools_section
 from app.tools.registry import get_tool
+from app.tools.sources import normalize_url
 
 if TYPE_CHECKING:
     from app.agents.base import AgentInput, BaseAgent
@@ -70,6 +73,8 @@ class ToolRuntime:
     # What made the upstream tainted (URLs read, injection flags), so an approver of a later send sees it.
     inherited_sources: list[str] = field(default_factory=list)
     inherited_warnings: list[str] = field(default_factory=list)
+    private_context: bool = False  # the task starts holding private data (e.g. a private memory; Part 10)
+    memory_sources: list[str] = field(default_factory=list)  # verified URLs of memory facts in the prompt
     resume: ResumeInfo | None = None
 
 
@@ -104,15 +109,21 @@ class LoopReport:
     route_position: int = 0
 
     sources_verified: dict[str, Any] | None = None  # set by the researcher's code check
+    private: bool = False  # the attempt read private data (sql/file/private memory)
     calls: list[dict[str, Any]] = field(default_factory=list)  # every step (tool, status, arguments, result, ...)
 
     def summary(self) -> dict[str, Any]:
         out = {"steps": self.steps, "tool_calls": self.tool_calls, "invalid_steps": self.invalid_steps,
+               "private": self.private,
                "reused": self.reused, "tainted": self.tainted, "by_tool": self.by_tool,
                "untrusted_sources": self.untrusted_sources[:20], "injection_warnings": self.injection_warnings}
         if self.sources_verified is not None:
             out["sources_verified"] = self.sources_verified
         return out
+
+
+PRIVATE_TOOLS = frozenset({"sql_query", "file_read"})  # results that make an attempt hold private data
+READ_URL_TOOLS = frozenset({"web_fetch", "http_request"})
 
 
 def build_step_model(output_model: type[BaseModel], tool_names: list[str]) -> type[BaseModel]:
@@ -159,6 +170,16 @@ class ToolLoop:
                                                   *rt.inherited_sources],
                                injection_warnings=list(rt.inherited_warnings))
         self.credentials = CredentialResolver(rt.config)
+        # Exfiltration guard (Part 10): what this attempt has seen as data, and whether it holds private data.
+        self.private = rt.private_context
+        self.private_tokens: set[str] = set()
+        # Links in a TAINTED upstream output may have been planted by a page (two-step exfiltration): they do not
+        # count as trusted provenance; only untainted upstream outputs and the task input do.
+        clean_upstream = {k: v for k, v in (agent_input.dependency_outputs or {}).items() if k not in rt.tainted_from}
+        self.provenance: set[str] = urls_in(agent_input.task_input) | urls_in(clean_upstream)
+        # Memory facts were verified when stored: citing them is allowed, and their links count as seen.
+        self.report.seen_urls |= set(rt.memory_sources)
+        self.provenance |= {normalize_url(u) for u in rt.memory_sources}
 
     # ------------------------------------------------------------------ helpers
     def _options(self, tool: Tool) -> dict[str, Any]:
@@ -187,6 +208,10 @@ class ToolLoop:
         if view.status == "rejected_invalid":
             self.report.invalid_steps += 1
         if view.status == "succeeded":
+            if view.tool in PRIVATE_TOOLS:
+                self.private = True
+                self.private_tokens |= tokens_in(view.result or {})
+            self.provenance |= {normalize_url(u) for u in _urls_from(view.tool, view.arguments, view.result)}
             self.report.tool_calls += 1
             self.report.reused += int(view.reused)
             self.report.seen_urls |= _urls_from(view.tool, view.arguments, view.result)
@@ -212,6 +237,10 @@ class ToolLoop:
             if row.status in ("awaiting_approval", "approved", "running", "unknown_outcome", "proposed", "superseded"):
                 continue  # handled below (pending / unknown calls); superseded rows were replaced by a later row
             self._absorb(self._view(row))
+            for w in row.injection_warnings or []:  # also after a crash that left no loop_state
+                note = f"{w} ({_source_label(row.tool, row.arguments)})"
+                if note not in self.state.injection_warnings and w not in self.state.injection_warnings:
+                    self.state.injection_warnings.append(note)
         self.state.step_index = max([r.step_index + 1 for r in rows], default=0)
         # Calls whose outcome is open: the approved/denied pending call, or a call a dead attempt was running.
         for row in rows:
@@ -225,6 +254,7 @@ class ToolLoop:
 
     async def _execute_approved(self, row: ToolCall) -> None:
         tool = self.tools.get(row.tool) or get_tool(row.tool)
+        await self._budget_check()  # the cap counts executed rows in the DB, on every execution path
         flags: dict[str, Any] = {}
         if row.approval_id is not None:
             async with self.sf() as s:
@@ -238,6 +268,7 @@ class ToolLoop:
     async def _settle_unknown(self, row: ToolCall) -> None:
         """A dead attempt was running this call: apply the unknown-outcome rules."""
         tool = self.tools.get(row.tool) or get_tool(row.tool)
+        await self._budget_check()
         # Close it for good: the new row (re-run or human decision) replaces it, so it is never settled twice.
         await journal.set_status(self.sf, row.id, "superseded", finished_at=utcnow(),
                                  error="outcome unknown (its attempt ended while it ran); replaced by a new call")
@@ -355,6 +386,21 @@ class ToolLoop:
                    "input_schema": tool.input_model.model_json_schema()}
         raise ToolApprovalNeeded(call_id, payload, self.state)
 
+    def _exfil_warning(self, tool: Tool, args: BaseModel, side: str) -> str | None:
+        """Reads in a tainted or private-data attempt may only go to trusted URLs (see app/tools/exfil.py)."""
+        if tool.name not in READ_URL_TOOLS or side != "external_read" or not (self.state.tainted or self.private):
+            return None
+        url = str(getattr(args, "url", ""))
+        query = getattr(args, "query", None)
+        if query:
+            url += ("&" if "?" in url else "?") + urlencode(query)
+        options = self._options(tool)
+        return check_read_url(url, ExfilContext(
+            provenance=self.provenance, private_tokens=self.private_tokens,
+            read_allowlist=list(options.get("read_allowlist", [])),
+            max_url_length=self.rt.settings.exfil_max_url_length,
+            max_query_chars=self.rt.settings.exfil_max_query_chars))
+
     async def _budget_check(self) -> None:
         from app.services import budget_service
 
@@ -412,6 +458,9 @@ class ToolLoop:
             self._absorb(view)
             return
         warning = None
+        exfil = self._exfil_warning(tool, args, side)
+        if exfil:
+            await self._suspend(tool, args, reason, step_index, key, warning=exfil)
         if decision in ("unknown_reexecute", "unknown_needs_approval") and prev is not None:
             await journal.set_status(self.sf, prev.id, "superseded", finished_at=utcnow(),
                                      error="outcome unknown; replaced by a new call")
@@ -458,6 +507,7 @@ class ToolLoop:
             step = resp.data
             if step.action == "final" and step.output is not None:  # type: ignore[attr-defined]
                 self.report.tainted = self.state.tainted
+                self.report.private = self.private
                 self.report.untrusted_sources = list(self.state.untrusted_sources)
                 self.report.injection_warnings = list(self.state.injection_warnings)
                 self.report.calls = [{"tool": v.tool, "status": v.status, "arguments": v.arguments, "result": v.result,

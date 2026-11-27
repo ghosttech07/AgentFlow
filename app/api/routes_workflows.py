@@ -6,21 +6,23 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Response, status
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.auth import require_admin
 from app.core.enums import WorkflowStatus
+from app.core.plan_patch import PlanPatch
 from app.db.session import get_session
 from app.engine import Engine
 from app.engine.deps import get_engine
-from app.schemas.common import ErrorResponse
+from app.llm import LLMClient, get_llm_client
 from app.schemas.attempt import AttemptRead
+from app.schemas.common import ErrorResponse
 from app.schemas.control import CancelRequest, PauseRequest, ResumeRequest
 from app.schemas.event import EventRead
 from app.schemas.plan import PlanRequest, WorkflowGraph
 from app.schemas.task import TaskRead
 from app.schemas.workflow import BudgetUpdate, WorkflowCreate, WorkflowDetail, WorkflowList, WorkflowRead
-from app.llm import LLMClient, get_llm_client
 from app.services import budget_service, control_service, planning_service, timeline_service, workflow_service
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
@@ -105,6 +107,43 @@ async def retry_workflow(
     return WorkflowDetail.from_model(workflow)
 
 
+class ReplanRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    actor: str = Field(default="admin", min_length=1, max_length=255)
+    instructions: str | None = Field(default=None, max_length=2000)
+
+
+class PlanPatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    actor: str = Field(default="admin", min_length=1, max_length=255)
+    patch: PlanPatch
+
+
+@router.post("/{workflow_id}/replan", status_code=202, response_model=WorkflowDetail,
+             dependencies=[Depends(require_admin)], responses={**NOT_FOUND, 409: {"model": ErrorResponse}})
+async def replan_workflow(workflow_id: uuid.UUID, body: ReplanRequest, session: AsyncSession = Depends(get_session),
+                          engine: Engine | None = Depends(get_engine)) -> WorkflowDetail:
+    """Ask the planner to patch the plan (any workflow that is RUNNING, AWAITING_APPROVAL, PAUSED or FAILED).
+    Finished, running and approved work is never changed; bounded by MAX_REPLANS."""
+    from app.services import replan_service
+
+    await replan_service.request_human(session, workflow_id, body.actor, body.instructions)
+    if engine:
+        engine.wake()
+    return await workflow_service.detail_with_usage(session, await workflow_service.get_workflow(session, workflow_id))
+
+
+@router.post("/{workflow_id}/plan-patch", response_model=WorkflowDetail, dependencies=[Depends(require_admin)],
+             responses={**NOT_FOUND, 409: {"model": ErrorResponse}, 422: {"model": ErrorResponse}})
+async def patch_plan(workflow_id: uuid.UUID, body: PlanPatchRequest, session: AsyncSession = Depends(get_session)
+                     ) -> WorkflowDetail:
+    """Apply a human-written plan patch while the workflow is PAUSED (same validation as the planner's)."""
+    from app.services import replan_service
+
+    await replan_service.human_patch(session, workflow_id, body.actor, body.patch)
+    return await workflow_service.detail_with_usage(session, await workflow_service.get_workflow(session, workflow_id))
+
+
 @router.post("/{workflow_id}/pause", response_model=WorkflowDetail, dependencies=[Depends(require_admin)],
              responses={**CONTROL, 409: {"model": ErrorResponse, "description": "Not RUNNING / AWAITING_APPROVAL"}})
 async def pause_workflow(
@@ -160,6 +199,17 @@ async def list_task_attempts(
     """Attempt history, oldest first (e.g. 1 = worker_lost, 2 = succeeded)."""
     rows = await workflow_service.list_attempts(session, workflow_id, key)
     return [AttemptRead.model_validate(r) for r in rows]
+
+
+@router.get("/{workflow_id}/plan-versions", responses=NOT_FOUND)
+async def list_plan_versions(workflow_id: uuid.UUID, session: AsyncSession = Depends(get_session)) -> list[dict[str, Any]]:
+    """Every version of the plan (1 = the original; later = re-plan patches, incl. proposed/rejected ones)."""
+    from app.services.graph_service import list_plan_versions as _list
+
+    await workflow_service.get_workflow(session, workflow_id)
+    return [{"version": v.version, "status": v.status, "trigger": v.trigger, "reason": v.reason, "patch": v.patch,
+             "created_by": v.created_by, "approved_by": v.approved_by, "created_at": v.created_at.isoformat(),
+             "applied_at": v.applied_at.isoformat() if v.applied_at else None} for v in await _list(session, workflow_id)]
 
 
 @router.get("/{workflow_id}/tasks/{key}/tool-calls", responses=NOT_FOUND)

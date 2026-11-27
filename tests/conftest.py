@@ -22,18 +22,19 @@ os.environ["ADMIN_API_KEY"] = ""  # empty = no auth (overrides .env); test_auth 
 os.environ["APPROVAL_WEBHOOK_URL"] = ""
 os.environ["WEB_SEARCH_PROVIDER"] = "none"  # tests never touch the internet
 os.environ["GEMINI_WORKER_MODEL"] = ""
+# Tests inject fake clients themselves; a shell or CI LLM_PROVIDER=fake must not change what they test.
+os.environ["LLM_PROVIDER"] = "gemini"
 
 import pytest
-from alembic import command
 from alembic.config import Config
+from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import make_url, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from alembic import command
 from app.config import PROJECT_ROOT, get_settings
-from fastapi import FastAPI
-
 from app.db.session import get_session
 from app.engine import Engine
 from app.llm import get_llm_client
@@ -41,7 +42,7 @@ from app.llm.fake_client import FakeLLMClient
 from app.main import create_app
 
 TEST_DATABASE_URL = get_settings().test_database_url
-TABLES = ("workflow_events", "task_dependencies", "tasks", "workflows", "provider_usage", "asks")  # others cascade
+TABLES = ("workflow_events", "task_dependencies", "tasks", "workflows", "provider_usage", "asks", "memories")  # others cascade
 
 
 def _alembic_config() -> Config:
@@ -49,6 +50,16 @@ def _alembic_config() -> Config:
     cfg.attributes["database_url"] = TEST_DATABASE_URL
     cfg.attributes["skip_logging_config"] = True
     return cfg
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_configure(config: pytest.Config) -> None:
+    """Every run leaves a JUnit XML report in reports/ (git-ignored), so a failure is always identifiable later."""
+    if not config.option.xmlpath:
+        from datetime import UTC, datetime
+
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        config.option.xmlpath = str(PROJECT_ROOT / "reports" / f"junit-{stamp}.xml")
 
 
 @pytest.fixture(scope="session", autouse=True)

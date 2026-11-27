@@ -215,6 +215,7 @@ details.more summary { cursor: pointer; font-weight: 600; color: var(--ink-2); f
   <aside class="side" id="side" aria-label="History">
     <div class="brand"><h1 class="wordmark">AgentFlow</h1></div>
     <button class="newbtn" id="newbtn" type="button"><svg class="i"><use href="#i-plus"/></svg>New question</button>
+    <button class="newbtn" id="memorybtn" type="button" style="margin-top:-6px"><svg class="i"><use href="#i-doc"/></svg>Memory</button>
     <div class="histhead" id="histlabel">History</div>
     <nav id="history" aria-labelledby="histlabel"></nav>
     <details class="settings">
@@ -328,12 +329,15 @@ function ago(iso) {
 const STATUS = {
   PENDING: ["Starting", "run"], PLANNING: ["Planning", "run"], RUNNING: ["Working", "run"], PAUSED: ["Paused", "wait"],
   AWAITING_APPROVAL: ["Needs your approval", "wait"], COMPLETED: ["Done", "ok"], FAILED: ["Failed", "bad"], CANCELLED: ["Cancelled", ""],
+  REPLANNING: ["Re-planning", "run"],
   answered: ["Answered", "ok"], failed: ["Failed", "bad"],
 };
 const TASK_STATUS = {
   PENDING: "Waiting", READY: "Up next", RUNNING: "Working…", RETRYING: "Retrying", AWAITING_APPROVAL: "Needs your approval",
-  SUCCEEDED: "Done", FAILED: "Failed", CANCELLED: "Cancelled", SKIPPED: "Skipped",
+  SUCCEEDED: "Done", FAILED: "Failed", CANCELLED: "Cancelled", SKIPPED: "Skipped", SUPERSEDED: "Replaced",
 };
+const SKIP = { condition_false: "its condition was false", upstream_skipped: "an earlier step was skipped",
+  no_dependency_succeeded: "no earlier step succeeded" };
 const AGENT = { researcher: "Researcher", analyst: "Analyst", writer: "Writer", reviewer: "Reviewer", publisher: "Publisher", communicator: "Communicator" };
 const pill = (s) => { const [label, cls] = STATUS[s] || [s, ""]; return `<span class="pill"><span class="dot ${cls}"></span>${esc(label)}</span>`; };
 
@@ -368,15 +372,35 @@ $("composer").onsubmit = async (e) => {
 /* ---------------------------------------------------------------- routing */
 function go(r, push = true) {
   route = r; clearInterval(poll);
-  const hash = r.kind === "home" ? "" : `#${r.kind}/${r.id}`;
+  const hash = r.kind === "home" ? "" : r.kind === "memory" ? "#memory" : `#${r.kind}/${r.id}`;
   if (push && location.hash !== hash) history.pushState(null, "", hash || location.pathname);
   document.body.classList.remove("menu");
   markCurrent(); render();
 }
 function parseHash() {
+  if (location.hash === "#memory") return { kind: "memory", id: "memory" };
   const m = location.hash.match(/^#(q|r)\/([0-9a-f-]{36})$/);
   return m ? { kind: m[1], id: m[2] } : { kind: "home" };
 }
+$("memorybtn").onclick = () => go({ kind: "memory", id: "memory" });
+async function showMemory(q = "") {
+  let items = [];
+  try { items = (await api("GET", `/memories?q=${encodeURIComponent(q)}&limit=100`)).items; }
+  catch (err) { $("content").innerHTML = `<div class="view"><div class="note bad">${esc(err.message)}</div></div>`; return; }
+  $("content").innerHTML = `<div class="view"><h2 class="q">Memory</h2>
+    <p class="hint">Facts and lessons AgentFlow kept from earlier research (verified sources only). They are reused, with their date, when a new question is similar.</p>
+    <form id="memsearch" class="actions"><input class="field" name="q" value="${esc(q)}" placeholder="Search memory" style="flex:1;padding:8px 10px;border-radius:9px;border:1px solid var(--line-2);background:var(--surface)"><button class="btn" type="submit">Search</button></form>
+    <ol class="steps">${items.map((m) => `<li><span>${esc(m.content)}<span class="hint" style="display:block">${esc(m.kind)} · ${esc(new Date(m.created_at).toLocaleDateString())}${m.confidence ? " · confidence " + esc(m.confidence) : ""}${m.tainted ? " · from web content" : ""}${m.private ? " · private" : ""}${(m.sources || []).length ? " · " + m.sources.slice(0, 2).map((s) => `<a href="${esc(safeUrl(s.url))}" target="_blank" rel="noopener noreferrer">${esc(hostOf(s.url))}</a>`).join(", ") : ""}</span></span>
+      <span class="who"><button class="btn" data-mem-pin="${esc(m.id)}" data-pinned="${m.pinned}">${m.pinned ? "Unpin" : "Pin"}</button> <button class="btn danger" data-mem-del="${esc(m.id)}">Delete</button></span></li>`).join("") || `<li>Nothing stored yet. Research results with verified sources appear here.</li>`}</ol></div>`;
+}
+$("content").addEventListener("submit", (e) => { if (e.target.id === "memsearch") { e.preventDefault(); showMemory(e.target.elements.q.value); } });
+$("content").addEventListener("click", async (e) => {
+  const pin = e.target.closest("[data-mem-pin]"), del = e.target.closest("[data-mem-del]");
+  try {
+    if (pin) { await api("POST", `/memories/${pin.dataset.memPin}/pin?pinned=${pin.dataset.pinned !== "true"}`); showMemory(); }
+    if (del && confirm("Delete this memory? It will not be reused.")) { await api("DELETE", `/memories/${del.dataset.memDel}`); showMemory(); }
+  } catch (err) { toast(err.message, true); }
+});
 window.addEventListener("popstate", () => go(parseHash(), false));
 $("newbtn").onclick = () => { go({ kind: "home" }); $("question").focus(); };
 function setMenu(open) {
@@ -393,6 +417,7 @@ function render() {
   if (route.kind === "home") { $("content").innerHTML = `<h2>AgentFlow</h2>`; $("content").appendChild($("dock")); $("dock").style.position = "static"; return; }
   $("dock").style.position = ""; $("main").appendChild($("dock"));
   if (route.kind === "q") return showAsk(route.id);
+  if (route.kind === "memory") return showMemory();
   showResearch(route.id);
   poll = setInterval(() => showResearch(route.id, true), 2500);
 }
@@ -464,6 +489,25 @@ function reportHtml(wf) {
 
 function approvalHtml(a) {
   const p = a.request_payload || {};
+  if (p.kind === "plan_patch") {
+    return `<section class="ask-card" data-approval="${esc(a.id)}" data-kind="plan_patch">
+      <h3>${icon("hand")} Approve a change to the plan?</h3>
+      <p>${esc(p.summary || "")} <span class="hint">Needs you because ${esc((p.why || []).join("; "))}.</span></p>
+      <pre>${esc((p.diff || []).join("\n"))}</pre>
+      <label class="field">Comment or reason<input class="comment"></label>
+      <div class="actions" style="margin:12px 0 0"><button class="btn primary" data-d="approve">${icon("check")} Apply the change</button>
+        <button class="btn danger" data-d="fail_workflow">Reject it</button></div></section>`;
+  }
+  if (p.kind === "loop_exhausted") {
+    const reviews = Object.entries(p.reviews || {}).map(([i, r]) => `draft ${esc(i)}: score ${esc(r.score ?? "?")}`).join(" · ");
+    return `<section class="ask-card" data-approval="${esc(a.id)}" data-kind="loop_exhausted">
+      <h3>${icon("hand")} The drafts still don't meet the bar</h3>
+      <p>${esc(p.reason || "")}. ${esc(reviews)}</p>
+      <label class="field">Try more drafts (optional)<input class="extra" inputmode="numeric" placeholder="e.g. 1"></label>
+      <label class="field">Comment or reason<input class="comment"></label>
+      <div class="actions" style="margin:12px 0 0"><button class="btn primary" data-d="approve">${icon("check")} Continue</button>
+        <button class="btn danger" data-d="fail_workflow">Stop the research</button></div></section>`;
+  }
   if (p.kind === "tool_call") {
     return `<section class="ask-card" data-approval="${esc(a.id)}" data-kind="tool_call">
       <h3>${icon("hand")} Approve this action?</h3>
@@ -472,6 +516,7 @@ function approvalHtml(a) {
       ${p.tainted ? `<div class="warnings">This step read content from the web${(p.untrusted_sources || []).length ? ` (${esc(p.untrusted_sources.slice(0, 3).join(", "))})` : ""}, so a person must check it first.</div>` : ""}
       ${(p.injection_warnings || []).length ? `<div class="warnings">Suspicious text found in a web page: ${esc(p.injection_warnings.join("; "))}. It may be trying to trick the agent.</div>` : ""}
       <label class="field">Exactly what will be sent (you can edit it)<textarea class="args" rows="6">${esc(JSON.stringify(p.arguments, null, 2))}</textarea></label>
+      <div class="dup warnings" hidden></div>
       <label class="field">Comment or reason<input class="comment"></label>
       <div class="actions" style="margin:12px 0 0"><button class="btn primary" data-d="approve">${icon("check")} Approve</button>
         <button class="btn" data-d="inform_agent">Don't do it</button><button class="btn danger" data-d="fail_task">Stop this step</button></div></section>`;
@@ -527,10 +572,10 @@ function toolList(rows) {
 async function showResearch(id, quiet = false) {
   if (!quiet) { lastResearchHtml = ""; $("content").innerHTML = `<div class="view"><div class="skel" style="width:60%;height:26px"></div><div class="skel"></div></div>`; }
   if (document.activeElement && $("content").contains(document.activeElement) && document.activeElement.matches("input, textarea")) return;
-  let wf, pend, tl;
+  let wf, pend, tl, versions = [];
   try {
-    [wf, pend, tl] = await Promise.all([api("GET", `/workflows/${id}`), api("GET", `/approvals?status=pending&workflow_id=${id}`),
-      api("GET", `/workflows/${id}/timeline`).catch(() => null)]);
+    [wf, pend, tl, versions] = await Promise.all([api("GET", `/workflows/${id}`), api("GET", `/approvals?status=pending&workflow_id=${id}`),
+      api("GET", `/workflows/${id}/timeline`).catch(() => null), api("GET", `/workflows/${id}/plan-versions`).catch(() => [])]);
     // Part 9: the tool journal of every task that has used a tool (from the timeline's markers)
     const used = (tl ? tl.spans : []).filter((s) => s.attempts.some((a) => (a.tool_calls || []).length)).map((s) => s.task_key);
     const lists = await Promise.all(used.map((k) => api("GET", `/workflows/${id}/tasks/${encodeURIComponent(k)}/tool-calls`).catch(() => [])));
@@ -541,7 +586,7 @@ async function showResearch(id, quiet = false) {
   const steps = wf.tasks.map((t) => {
     const cls = { RUNNING: "run", RETRYING: "run", AWAITING_APPROVAL: "wait", SUCCEEDED: "ok", FAILED: "bad" }[t.status] || "";
     return `<li><span class="dot ${cls}"></span><span>${esc(t.name)}${t.error && t.status === "FAILED" ? `<span class="err">${esc(t.error.slice(0, 180))}</span>` : ""}</span>
-      <span class="who">${esc(AGENT[t.agent_type] || t.agent_type)} · ${esc(TASK_STATUS[t.status] || t.status)}</span>${toolList(toolCalls[t.key])}</li>`;
+      <span class="who">${esc(AGENT[t.agent_type] || t.agent_type)} · ${esc(TASK_STATUS[t.status] || t.status)}${t.skip_reason ? ` (${esc(SKIP[t.skip_reason] || t.skip_reason)})` : ""}${t.iteration > 1 ? ` · draft ${t.iteration}` : ""}</span>${toolList(toolCalls[t.key])}</li>`;
   }).join("");
   const u = wf.usage || {}, eff = wf.effective_budget || {};
   const html = `<div class="view">
@@ -550,11 +595,13 @@ async function showResearch(id, quiet = false) {
       ${c.can_pause ? `<button class="btn" data-a="pause">Pause</button>` : ""}
       ${c.can_resume ? `<button class="btn primary" data-a="resume">Resume</button>` : ""}
       ${c.can_retry ? `<button class="btn primary" data-a="retry">Try again</button>` : ""}
+      ${c.can_replan ? `<button class="btn" data-a="replan">Re-plan</button>` : ""}
       ${c.can_cancel ? `<button class="btn danger" data-a="cancel">Cancel</button>` : ""}
     </div>
     ${wf.status === "PLANNING" || (wf.status === "PENDING" && !wf.tasks.length) ? `<div class="status-line"><span class="dot run"></span>Planning the research…</div>` : ""}
     ${budgetPaused ? `<div class="note warn">Paused because it reached its usage limit. Raise the limit under “Details” and press Resume. Finished work is kept.</div>` : ""}
     ${wf.error && !["PAUSED", "COMPLETED"].includes(wf.status) ? `<div class="note bad">${esc(wf.error)}</div>` : ""}
+    ${(wf.result && wf.result.failed_branches || []).length ? `<div class="note warn"><span class="badge warn">Warning</span> Finished, but ${wf.result.failed_branches.length} branch(es) failed: ${wf.result.failed_branches.map((b) => esc(b.key) + " (" + esc(b.error || b.error_type || "") + ")").join(", ")}.</div>` : ""}
     ${pend.map(approvalHtml).join("")}
     ${wf.status === "COMPLETED" ? reportHtml(wf) : ""}
     ${wf.tasks.length ? `<div class="bar" role="img" aria-label="${done} of ${p.total} steps done"><i style="width:${p.total ? (done / p.total) * 100 : 0}%"></i></div>
@@ -569,6 +616,7 @@ async function showResearch(id, quiet = false) {
         <label class="field">Max cost ($)<input name="max_cost_usd" inputmode="decimal" value="${eff.max_cost_usd ?? ""}" placeholder="no limit"></label>
         <button class="btn" type="submit">Save limits</button></form>
       ${tl ? ganttHtml(tl) : ""}
+      ${versions.length > 1 ? `<div class="sub">Plan history</div><ol class="log">${versions.map((v) => `<li><time>v${v.version}</time><span>${esc(v.trigger)} · ${esc(v.status)}${v.approved_by ? " · approved by " + esc(v.approved_by) : ""}${(v.patch && v.patch.diff || []).length ? "<br>" + v.patch.diff.map(esc).join("<br>") : ""}</span></li>`).join("")}</ol>` : ""}
       ${devTools && ["RUNNING", "AWAITING_APPROVAL"].includes(wf.status) ? `<div class="sub">Development</div>
         <p class="hint">Kill the server while the next step runs, then restart it to watch recovery. Hidden in production.</p>
         <button class="btn danger" type="button" data-chaos="1">Simulate a crash</button>` : ""}
@@ -597,9 +645,10 @@ $("content").addEventListener("click", (e) => {
       pause: () => api("POST", `/workflows/${id}/pause`, { actor: actor(), mode: "graceful" }),
       resume: () => api("POST", `/workflows/${id}/resume`, { actor: actor() }),
       retry: () => api("POST", `/workflows/${id}/retry`),
+      replan: () => { const instructions = prompt("What should the planner change? (optional)"); if (instructions === null) throw new Error("Not re-planned."); return api("POST", `/workflows/${id}/replan`, { actor: actor(), instructions: instructions || null }); },
       cancel: () => { const reason = prompt("Cancel this research? Optional reason:"); if (reason === null) throw new Error("Not cancelled."); return api("POST", `/workflows/${id}/cancel`, { actor: actor(), reason: reason || null }); },
     }[a.dataset.a];
-    if (run) act(run, { pause: "Paused", resume: "Resumed", retry: "Trying again", cancel: "Cancelled" }[a.dataset.a]);
+    if (run) act(run, { pause: "Paused", resume: "Resumed", retry: "Trying again", cancel: "Cancelled", replan: "Re-planning…" }[a.dataset.a]);
     return;
   }
   const chaosBtn = e.target.closest("[data-chaos]");
@@ -620,7 +669,13 @@ $("content").addEventListener("click", (e) => {
     const aid = card.dataset.approval, comment = card.querySelector(".comment").value.trim();
     if (d.dataset.d === "approve") {
       const body = { actor: actor(), comment: comment || null };
+      if (card.dataset.kind === "loop_exhausted") {
+        const n = parseInt(card.querySelector(".extra").value, 10);
+        if (n > 0) body.extra_iterations = n;
+      }
       if (card.dataset.kind === "tool_call") {
+        const dup = card.querySelector(".dup-confirm");
+        if (dup) body.confirm_duplicate = dup.checked;
         try { body.arguments_overrides = JSON.parse(card.querySelector(".args").value); }
         catch { throw new Error("The details to send must be valid JSON."); }
       }
@@ -629,6 +684,23 @@ $("content").addEventListener("click", (e) => {
     if (!comment) throw new Error("Add a short reason first (it is recorded).");
     return api("POST", `/approvals/${aid}/reject`, { actor: actor(), reason: comment, on_reject: d.dataset.d });
   }, d.dataset.d === "approve" ? "Approved" : "Recorded");
+});
+/* Duplicate-send check while the approver edits the arguments (Part 10): never a silent second send. */
+let dupTimer = null;
+$("content").addEventListener("input", (e) => {
+  const ta = e.target.closest("textarea.args");
+  if (!ta) return;
+  clearTimeout(dupTimer);
+  dupTimer = setTimeout(async () => {
+    const card = ta.closest("[data-approval]"), box = card.querySelector(".dup");
+    let args; try { args = JSON.parse(ta.value); } catch { box.hidden = true; return; }
+    try {
+      const r = await api("POST", `/approvals/${card.dataset.approval}/check`, { arguments_overrides: args });
+      box.hidden = !r.already_sent_at;
+      box.innerHTML = r.already_sent_at ? `This exact message was already sent at ${esc(new Date(r.already_sent_at).toLocaleString())}.
+        <label style="display:block;margin-top:6px"><input type="checkbox" class="dup-confirm"> Send it again anyway</label>` : "";
+    } catch { box.hidden = true; }
+  }, 400);
 });
 $("content").addEventListener("submit", (e) => {
   if (e.target.id !== "budgetform") return;

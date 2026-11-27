@@ -12,7 +12,7 @@ import re
 from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Any, Protocol
 
 KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,49}$")  # lowercase snake_case, 1-50 chars
 PLANNER_AGENT_TYPE = "planner"
@@ -92,6 +92,77 @@ def validate_plan(
     cycle = find_cycle({t.key: list(t.depends_on) for t in tasks})
     if cycle:
         add("cycle", f"Dependency cycle: {' -> '.join(cycle)}", cycle[0])
+    return errors
+
+
+LOOP_KEY_MAX = 46  # "<key>__v<n>" must fit the 50-char key rule
+
+
+def validate_adaptive(tasks: Sequence[Any], loops: Sequence[Any], max_loop_iterations: int) -> list[PlanValidationError]:
+    """Part 10 rules: conditions parse and only reference what they may; loops are bounded contiguous chains."""
+    from app.core.conditions import ConditionSyntaxError, parse_condition
+
+    errors: list[PlanValidationError] = []
+
+    def add(code: str, message: str, key: str | None = None) -> None:
+        errors.append(PlanValidationError(code, message, key))
+
+    by_key = {t.key: t for t in tasks}
+    for t in tasks:
+        deps = set(t.depends_on)
+        for field_name, allowed, what in (("run_if", deps, "its dependencies"), ("replan_if", deps | {t.key},
+                                                                                  "itself and its dependencies")):
+            expr = getattr(t, field_name, None)
+            if not expr:
+                continue
+            try:
+                cond = parse_condition(expr, set(by_key))
+            except ConditionSyntaxError as exc:
+                add(f"invalid_{field_name}", f"Task '{t.key}': {field_name} is an invalid condition: {exc}", t.key)
+                continue
+            if cond.refs - allowed:
+                add(f"{field_name}_scope", f"Task '{t.key}': {field_name} may only use {what} "
+                    f"(not {', '.join(sorted(cond.refs - allowed))})", t.key)
+    seen_loop_tasks: set[str] = set()
+    names = Counter(lp.name for lp in loops)
+    for lp in loops:
+        if names[lp.name] > 1 or not KEY_RE.match(lp.name):
+            add("invalid_loop_name", f"Loop name '{lp.name}' must be unique snake_case", None)
+        missing = [k for k in lp.body if k not in by_key]
+        for k in missing:
+            add("loop_unknown_task", f"Loop '{lp.name}': unknown task '{k}' in body", k)
+        if not lp.body or missing:
+            continue
+        for prev, cur in zip(lp.body, lp.body[1:], strict=False):
+            if prev not in by_key[cur].depends_on:
+                add("loop_not_chain", f"Loop '{lp.name}': the body must be a contiguous chain "
+                    f"('{cur}' must depend on '{prev}')", cur)
+        for k in lp.body:
+            if getattr(by_key[k], "run_if", None):
+                add("loop_body_run_if", f"Loop '{lp.name}': body task '{k}' may not have a run_if (a skipped body "
+                    "task would leave the loop unfinished); put the condition on a task before the loop", k)
+            if len(k) > LOOP_KEY_MAX:
+                add("loop_key_too_long", f"Loop '{lp.name}': '{k}' is {len(k)} characters; loop body task key must be "
+                    f"<= {LOOP_KEY_MAX} characters so __vN fits", k)
+            if k in seen_loop_tasks:
+                add("loop_overlap", f"Task '{k}' is in more than one loop", k)
+            seen_loop_tasks.add(k)
+        for field_name in ("until", "best_by"):
+            expr = getattr(lp, field_name, None)
+            if not expr:
+                continue
+            try:
+                cond = parse_condition(expr, set(by_key))
+            except ConditionSyntaxError as exc:
+                add("loop_invalid_condition", f"Loop '{lp.name}': {field_name} is an invalid condition: {exc}")
+                continue
+            if cond.refs - set(lp.body):
+                add("loop_condition_scope", f"Loop '{lp.name}': {field_name} may only use the loop's own tasks "
+                    f"(not {', '.join(sorted(cond.refs - set(lp.body)))})")
+        if not 1 <= lp.max_iterations <= max_loop_iterations:
+            add("loop_max_iterations", f"Loop '{lp.name}': max_iterations must be 1-{max_loop_iterations}")
+        if lp.feedback.from_ not in lp.body or lp.feedback.to not in lp.body:
+            add("loop_feedback", f"Loop '{lp.name}': feedback from/to must be tasks of the loop body")
     return errors
 
 

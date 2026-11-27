@@ -23,7 +23,11 @@ Stop any other AgentFlow server that uses the same database (two engines would c
    run in parallel; an invented source is removed by code; the email waits for approval showing exactly
    what will be sent; the approver edits the subject; the server crashes right after sending; after the
    restart there is still exactly **one** email; the malicious page is flagged and its email is blocked.
-4. **The dashboard (1 min).** `LLM_PROVIDER=fake uvicorn app.main:app`, open `/dashboard`, ask a
+4. **Adaptive (2 min, optional).** `python scripts/adaptive_demo.py`. Point at: the first draft scores 5,
+   `write_guide__v2` lists its `changes_made`, the second scores 9; the server crashes during v2 and there is
+   still exactly one v2; a failed task is SUPERSEDED by a re-plan; the second run answers from memory with
+   fewer calls; a URL carrying private rows is held for a human.
+5. **The dashboard (1 min).** `LLM_PROVIDER=fake uvicorn app.main:app`, open `/dashboard`, ask a
    question, start a deep research run, show the steps, an approval card and the history.
 
 ### Recording the short video
@@ -59,6 +63,54 @@ email recipients must match an allowlist unless the approver explicitly override
 Code compares every cited URL with the URLs the researcher actually got from search or opened in that
 task. Anything else is removed, listed separately, and the confidence is lowered.
 
+**How do you stop infinite loops?**
+
+By code, with four limits, so the model never decides how long a loop runs:
+
+1. `max_iterations` per loop. It is capped by `MAX_LOOP_ITERATIONS`, and the planner can't go above it.
+2. `max_iterations_total` across all loops of a workflow (budget).
+3. A pre-check before each new iteration. If the expected LLM calls would cross `max_llm_calls`, the iteration is
+   not started.
+4. An iteration that can never finish (for example, a skipped body step) ends the loop instead of hanging.
+
+When a loop runs out, it either keeps the best draft, fails, or asks a human, as configured. A human can grant
+extra iterations, but only through an approval that is recorded.
+
+**Why unroll loops instead of using real cycles?**
+
+All the reliability guarantees assume a DAG, and a SUCCEEDED task is never re-run. Unrolling (`write_guide__v2`)
+keeps both guarantees:
+
+- Each iteration has its own rows, attempts, cost and output, so every draft stays in the history.
+- Crash recovery works unchanged.
+- The demo crashes the server during the second draft and shows exactly one `__v2` afterwards.
+
+**How do you prevent memory poisoning?**
+
+1. **Only verified facts become memory.** Facts come only from researchers whose sources were verified against
+   what they actually fetched.
+2. **Every memory keeps the flags of its source.** If the source read untrusted web content, the memory is
+   *tainted*; if it saw SQL rows, the memory is *private*. Lessons and summaries inherit the flags of the tasks
+   they were built from.
+3. **A tainted memory is handled as untrusted.** It is shown to the model inside untrusted-data tags, and the task
+   that reads it becomes tainted, so any outside action needs a human.
+4. **Memories expire and can be managed.** They expire after a time limit. They can be searched, pinned and
+   deleted through `/memories`. They are scoped by namespace, so one team's memory doesn't leak into another's
+   (Part 11).
+
+**How can re-planning not destroy finished work?**
+
+1. **The planner can only propose a patch.** A patch can add tasks, cancel tasks that never started, or replace a
+   *failed* task.
+2. **Code validates the patch against the real graph before applying it.** It rejects a patch that would:
+   - cancel finished, running or approved work;
+   - rewire a dependent that already started;
+   - touch a loop's tasks;
+   - make the merged graph invalid.
+3. **A replaced task is marked SUPERSEDED, not deleted.** Every version stays in `plan_versions`.
+4. **Risky patches need a human.** A patch that is sensitive or too big needs an approval.
+5. **The patch is applied in one locked transaction.** It applies completely or not at all, even across a crash.
+
 **Why PostgreSQL instead of Redis, Kafka or Temporal?**
 One system, transactional: a status change and its event commit together, and claiming work with
 `FOR UPDATE SKIP LOCKED` is safe across processes. AI steps take seconds, so the database is never the
@@ -80,5 +132,4 @@ models fall through to the next entry, with a circuit breaker per model; the mod
 fallback are recorded on the task.
 
 **What isn't done yet?**
-See "Limitations" in the README: user accounts and roles (Part 11), feedback loops (Part 10),
-load testing (Part 14), and live tests for the Anthropic and OpenAI adapters (no keys).
+See "Limitations" in the README: user accounts and roles (Part 11), load testing (Part 14), and live tests for the Anthropic and OpenAI adapters (no keys).

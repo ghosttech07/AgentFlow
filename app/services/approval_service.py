@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from collections.abc import Sequence
 from datetime import timedelta
 from typing import Any
 
@@ -23,10 +24,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.agents.registry import sensitive_agent_types
-from app.config import Settings
+from app.config import Settings, get_settings
 from app.core.enums import TaskStatus, WorkflowStatus
 from app.core.errors import ConflictError, NotFoundError, ValidationFailedError
-from app.core.events import EventType
+from app.core.events import EventType, record_event
 from app.core.state_machine import transition_task, transition_workflow
 from app.db.base import utcnow
 from app.models.approval import Approval
@@ -117,6 +118,70 @@ async def request_tool_approval(session: AsyncSession, wf: Workflow, task: Task,
     return approval
 
 
+async def request_loop_approval(session: AsyncSession, wf: Workflow, spec: Any, iteration: int, reason: str,
+                                tasks: Sequence[Task]) -> Approval:
+    """A loop used up its iterations and its spec says ask_human: a workflow-level approval (no task)."""
+    from app.services import graph_service
+
+    now = utcnow()
+    hours = get_settings().approval_timeout_hours
+    reviews = {}
+    for i in range(1, iteration + 1):
+        out = graph_service.iteration_tasks(tasks, spec.name, i).get(spec.feedback.from_)
+        reviews[str(i)] = {"score": (out.output or {}).get("score") if out else None,
+                           "summary": (out.output or {}).get("summary") if out else None}
+    approval = Approval(
+        id=uuid.uuid4(), workflow_id=wf.id, task_id=None, kind="loop_exhausted", status="pending", requested_at=now,
+        expires_at=now + timedelta(hours=hours) if hours > 0 else None,
+        request_payload={"kind": "loop_exhausted", "loop": spec.name, "iterations": iteration, "reason": reason,
+                         "until": spec.until, "reviews": reviews, "workflow_goal": wf.goal,
+                         "options": "approve = continue with the best iteration; approve with extra_iterations = try "
+                                    "again; reject = fail the workflow"},
+    )
+    session.add(approval)
+    await session.flush()
+    record_event(session, workflow_id=wf.id, event_type=EventType.APPROVAL_REQUESTED,
+                 payload={"approval_id": str(approval.id), "kind": "loop_exhausted", "loop": spec.name})
+    return approval
+
+
+async def _decide_workflow_level(session: AsyncSession, approval: Approval, wf: Workflow, *, approved: bool, actor: str,
+                                 comment: str | None, extra_iterations: int | None = None) -> Approval:
+    """Decisions on approvals that belong to the workflow, not a task (loop_exhausted; plan_patch in Part 10)."""
+    payload = approval.request_payload or {}
+    approval.status = "approved" if approved else "rejected"
+    approval.decided_at, approval.decided_by, approval.comment = utcnow(), actor, comment
+    extra = {"approval_id": str(approval.id), "actor": actor, "comment": comment, "kind": approval.kind}
+    if approval.kind == "loop_exhausted":
+        loops = dict((wf.context or {}).get("loops", {}))
+        name = payload["loop"]
+        state = dict(loops.get(name, {}))
+        if approved and extra_iterations:
+            state.update(status="expand_pending", extra_iterations=int(state.get("extra_iterations", 0)) + extra_iterations)
+            extra["extra_iterations"] = extra_iterations
+        elif approved:
+            state.update(status="choose_best", reason=f"approved by {actor}: continue with the best iteration")
+        else:
+            state.update(status="exhausted", reason=f"rejected by {actor}")
+        loops[name] = state
+        wf.context = {**wf.context, "loops": loops}
+    elif approval.kind == "plan_patch":
+        from app.services import replan_service
+
+        await replan_service.decide_patch(session, wf, approval, approved=approved, actor=actor)
+    record_event(session, workflow_id=wf.id,
+                 event_type=EventType.APPROVAL_APPROVED if approved else EventType.APPROVAL_REJECTED, payload=extra)
+    if not approved and wf.status in _FAILABLE and approval.kind == "loop_exhausted":
+        wf.error = f"Loop '{payload.get('loop')}' stopped by {actor}: {comment or 'rejected'}"
+        await transition_workflow(session, wf, WorkflowStatus.FAILED, event_type=EventType.WORKFLOW_FAILED,
+                                  reason=wf.error)
+    elif wf.status == WorkflowStatus.AWAITING_APPROVAL:
+        await transition_workflow(session, wf, WorkflowStatus.RUNNING, reason=f"decided by {actor}")
+    await session.commit()
+    logger.info("approval.%s kind=%s approval=%s actor=%s", approval.status, approval.kind, approval.id, actor)
+    return approval
+
+
 async def _set_tool_call(session: AsyncSession, approval: Approval, status: str, **values: Any) -> None:
     from app.models.tool_call import ToolCall
 
@@ -129,18 +194,31 @@ async def _set_tool_call(session: AsyncSession, approval: Approval, status: str,
             setattr(call, k, v)
 
 
-async def expire_due(session: AsyncSession, wf: Workflow, tasks: list[Task]) -> int:
+async def expire_due(session: AsyncSession, wf: Workflow, tasks: list[Task], *,
+                     workflow_level_only: bool = False) -> int:
     """Pending approvals past expires_at -> expired; their task FAILED (approval_expired)."""
-    rows = (
-        await session.scalars(
-            select(Approval).where(Approval.workflow_id == wf.id, Approval.status == "pending",
-                                   Approval.expires_at.is_not(None), Approval.expires_at <= utcnow())
-            .with_for_update()
-        )
-    ).all()
+    stmt = select(Approval).where(Approval.workflow_id == wf.id, Approval.status == "pending",
+                                  Approval.expires_at.is_not(None), Approval.expires_at <= utcnow())
+    if workflow_level_only:
+        stmt = stmt.where(Approval.task_id.is_(None))
+    rows = (await session.scalars(stmt.with_for_update())).all()
     by_id = {t.id: t for t in tasks}
     for a in rows:
         a.status, a.decided_at = "expired", utcnow()
+        if a.task_id is None:  # workflow-level approval (loop_exhausted / plan_patch): nobody decided in time
+            record_event(session, workflow_id=wf.id, event_type=EventType.APPROVAL_EXPIRED,
+                         payload={"approval_id": str(a.id), "kind": a.kind})
+            if a.kind == "plan_patch":
+                from app.services import replan_service
+
+                # the re-plan's own failure rule decides: automatic trigger -> FAILED, human -> back to before
+                await replan_service.decide_patch(session, wf, a, approved=False, actor="expiry")
+                continue
+            if wf.status in _FAILABLE:
+                wf.error = f"{a.kind} approval {a.id} expired without a decision"
+                await transition_workflow(session, wf, WorkflowStatus.FAILED, event_type=EventType.WORKFLOW_FAILED,
+                                          reason=wf.error)
+            continue
         await _set_tool_call(session, a, "denied", error="approval expired")
         task = by_id[a.task_id]
         task.error_type = "approval_expired"
@@ -203,14 +281,63 @@ async def _lock_pending(session: AsyncSession, approval_id: uuid.UUID) -> tuple[
     return approval, wf, task
 
 
+APPROVE_FIELDS: dict[str, set[str]] = {
+    "task": {"actor", "comment", "input_overrides"},
+    "tool_call": {"actor", "comment", "arguments_overrides", "allow_recipient_override", "confirm_duplicate"},
+    "plan_patch": {"actor", "comment"},
+    "loop_exhausted": {"actor", "comment", "extra_iterations"},
+}
+
+
+async def check_approve_fields(session: AsyncSession, approval_id: uuid.UUID, fields: set[str]) -> None:
+    """422 when the body carries fields that do not apply to this approval's kind (never silently ignored)."""
+    approval = await get_approval(session, approval_id)
+    allowed = APPROVE_FIELDS.get(approval.kind, {"actor", "comment"})
+    extra = sorted(fields - allowed)
+    if extra:
+        raise ValidationFailedError(
+            f"Field(s) {', '.join(extra)} do not apply to a {approval.kind} approval; allowed: {', '.join(sorted(allowed))}")
+
+
+async def duplicate_of(session: AsyncSession, approval: Approval, overrides: dict[str, Any] | None) -> tuple[str, Any]:
+    """(idempotency key of the arguments that would run, the time an identical call already succeeded or None)."""
+    import app.tools.catalog  # noqa: F401
+    from app.models.tool_call import ToolCall
+    from app.tools import journal
+    from app.tools.registry import get_tool
+
+    call = await session.get(ToolCall, approval.tool_call_id) if approval.tool_call_id else None
+    if call is None:
+        return "", None
+    final_args = {**(call.arguments or {}), **(overrides or {})}
+    try:
+        final_args = get_tool(call.tool).input_model.model_validate(final_args).model_dump(mode="json")
+    except Exception:
+        return "", None
+    key = journal.idempotency_key(call.workflow_id, approval.request_payload.get("task_key", ""), call.tool,
+                                  journal.args_hash(final_args))
+    sent = await session.scalar(select(ToolCall.finished_at).where(
+        ToolCall.idempotency_key == key, ToolCall.status == "succeeded", ToolCall.id != call.id)
+        .order_by(ToolCall.finished_at).limit(1))
+    return key, sent
+
+
 async def approve(
     session: AsyncSession, approval_id: uuid.UUID, *, actor: str, comment: str | None,
     input_overrides: dict[str, Any] | None, arguments_overrides: dict[str, Any] | None = None,
-    allow_recipient_override: bool = False,
+    allow_recipient_override: bool = False, confirm_duplicate: bool = False, extra_iterations: int | None = None,
 ) -> Approval:
     approval, wf, task = await _lock_pending(session, approval_id)
+    if approval.task_id is None:
+        return await _decide_workflow_level(session, approval, wf, approved=True, actor=actor, comment=comment,
+                                            extra_iterations=extra_iterations)
     changes: dict[str, Any] = {}
     if approval.kind == "tool_call":
+        _, sent_at = await duplicate_of(session, approval, arguments_overrides)
+        if sent_at is not None and not confirm_duplicate:  # never a silent duplicate send
+            await session.rollback()
+            raise ConflictError(f"This exact message was already sent at {sent_at.isoformat()}. Approve again with "
+                                "confirm_duplicate=true to send it anyway.")
         changes = await _approve_tool_call(session, approval, arguments_overrides, allow_recipient_override)
     elif input_overrides:
         old = task.input or {}
@@ -222,7 +349,7 @@ async def approve(
     else:
         approval.comment = comment
     extra = {"approval_id": str(approval.id), "actor": actor, "comment": comment, "input_changes": changes,
-             "kind": approval.kind}
+             "kind": approval.kind, **({"confirm_duplicate": True} if confirm_duplicate else {})}
     if task.status == TaskStatus.AWAITING_APPROVAL:
         await transition_task(session, task, TaskStatus.READY, event_type=EventType.APPROVAL_APPROVED,
                               extra=extra)
@@ -238,9 +365,9 @@ async def _approve_tool_call(session: AsyncSession, approval: Approval, override
                              allow_recipient_override: bool) -> dict[str, Any]:
     """Validate the (possibly edited) arguments against the tool's schema; the journal row gets the final
     arguments and their idempotency key (the key is computed on what actually executes)."""
-    import app.tools.catalog  # noqa: F401
     from pydantic import ValidationError
 
+    import app.tools.catalog  # noqa: F401
     from app.models.tool_call import ToolCall
     from app.tools import journal
     from app.tools.registry import get_tool
@@ -273,6 +400,8 @@ async def _approve_tool_call(session: AsyncSession, approval: Approval, override
 async def default_on_reject(session: AsyncSession, approval_id: uuid.UUID) -> str:
     """Task approvals default to fail_workflow; tool calls to the tool's tools.yaml on_reject."""
     approval = await get_approval(session, approval_id)
+    if approval.task_id is None:
+        return "fail_workflow"  # workflow-level approvals: reject = stop (loop) / discard the patch
     if approval.kind != "tool_call":
         return "fail_workflow"
     from app.tools import config as tools_config
@@ -286,6 +415,8 @@ async def reject(
     session: AsyncSession, approval_id: uuid.UUID, *, actor: str, reason: str, on_reject: str
 ) -> Approval:
     approval, wf, task = await _lock_pending(session, approval_id)
+    if approval.task_id is None:
+        return await _decide_workflow_level(session, approval, wf, approved=False, actor=actor, comment=reason)
     if approval.kind == "tool_call" and on_reject not in ("inform_agent", "fail_task"):
         await session.rollback()
         raise ValidationFailedError("A tool-call approval is rejected with on_reject inform_agent or fail_task")

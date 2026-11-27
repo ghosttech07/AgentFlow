@@ -50,7 +50,10 @@ class HttpRequestTool(Tool):
     timeout_seconds = 30.0
 
     def side_effect_for(self, args: BaseModel) -> SideEffect:
-        return "external_read" if getattr(args, "method", "GET") == "GET" else "external_write"
+        # A GET that carries a body sends data out: it is a write (exfiltration and approval rules apply).
+        if getattr(args, "method", "GET") == "GET" and getattr(args, "json_body", None) is None:
+            return "external_read"
+        return "external_write"
 
     async def execute(self, args: HttpRequestArgs, ctx: ToolContext) -> HttpRequestResult:
         host = urlsplit(args.url).hostname or ""

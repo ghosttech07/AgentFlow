@@ -22,12 +22,13 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app import __version__
 from app.api import (
     routes_agents,
-    routes_ask,
     routes_approvals,
+    routes_ask,
     routes_dashboard,
     routes_dev,
     routes_engine,
     routes_health,
+    routes_memory,
     routes_plans,
     routes_providers,
     routes_tools,
@@ -36,10 +37,10 @@ from app.api import (
 from app.config import PROJECT_ROOT, get_settings
 from app.core.errors import AppError
 from app.core.logging import request_id_var, setup_logging
-from app.tools.startup import log_tools_config
 from app.db.session import SessionLocal, engine
 from app.engine import Engine
 from app.llm import get_llm_client
+from app.tools.startup import log_tools_config
 
 logger = logging.getLogger("app")
 
@@ -152,6 +153,7 @@ def create_app() -> FastAPI:
     app.include_router(routes_ask.router)
     app.include_router(routes_providers.router)
     app.include_router(routes_tools.router)
+    app.include_router(routes_memory.router)
     app.include_router(routes_approvals.router)
     app.include_router(routes_dashboard.router)
     app.include_router(routes_dev.router)

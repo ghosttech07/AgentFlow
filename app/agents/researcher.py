@@ -18,6 +18,8 @@ class ResearchOutput(BaseModel):
     sources: list[Source]
     confidence: Literal["low", "medium", "high"]
     gaps: list[str] = Field(description="What could not be found or verified.")
+    from_memory: list[str] = Field(default_factory=list, description="Findings taken from PRIOR KNOWLEDGE (earlier "
+                                   "workflows), listed separately from newly researched ones.")
     removed_unverified_sources: list[Source] = Field(
         default_factory=list, description="Filled by the system: cited sources that were never opened (removed).")
 
@@ -65,6 +67,8 @@ Rules:
 - sources: return an empty list (the system fills it in from what you cited).
 - gaps: everything the sources did not cover or that you could not verify. Be honest.
 - confidence: "high" only if key findings are backed by several reliable, recent sources; "low" if sources are thin, old or missing.
+- If PRIOR KNOWLEDGE already covers the task with fresh, high-confidence facts, you may answer with fewer or no
+  searches: put those facts in from_memory and cite their sources; research only what is missing.
 - summary: 2-5 neutral, cited sentences."""
 
     def __init__(self, llm):  # noqa: ANN001

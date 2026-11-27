@@ -85,6 +85,14 @@ class Task(Base):
     requires_approval: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=text("false")
     )
+    # Part 10: loops (unrolled as <base>__v<n>), conditional branches, re-plan triggers.
+    loop_name: Mapped[str | None] = mapped_column(String(64))
+    iteration: Mapped[int] = mapped_column(Integer, default=1, server_default=text("1"))
+    base_key: Mapped[str | None] = mapped_column(String(64))
+    run_if: Mapped[str | None] = mapped_column(Text)
+    join: Mapped[str] = mapped_column(String(16), default="all_succeeded", server_default="all_succeeded")
+    replan_if: Mapped[str | None] = mapped_column(Text)
+    skip_reason: Mapped[str | None] = mapped_column(String(64))
     # Part 9: an attempt read untrusted content (web/API); downstream tasks start tainted.
     tainted: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
     attempt_count: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
