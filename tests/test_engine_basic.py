@@ -40,8 +40,8 @@ async def test_events_in_order(client: AsyncClient, make_engine) -> None:  # noq
     assert await event_types(client, wf_id) == [
         "workflow.created", "task.created", "task.created",
         "workflow.started",
-        "task.ready", "task.started", "task.succeeded",   # a
-        "task.ready", "task.started", "task.succeeded",   # b
+        "task.ready", "task.started", "task.succeeded", "task.manifest_recorded",   # a (+ Part 12 manifest)
+        "task.ready", "task.started", "task.succeeded", "task.manifest_recorded",   # b
         "workflow.completed",
     ]
     events = (await client.get(f"/workflows/{wf_id}/events")).json()

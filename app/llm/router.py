@@ -23,6 +23,7 @@ import time
 from typing import Any
 
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import Settings
@@ -116,6 +117,8 @@ class ModelRouter:
 
         errors: list[LLMError] = []
         skipped_quota = False
+        privacy_skips: list[str] = []  # Part 12: entries skipped because the prompt's PII may not go there
+        team = await self._team(ctx)
         # Legacy (no models.yaml) keeps the v1 rule: fall back only on overload and model-not-found.
         fallback_on = LEGACY_FALLBACK_ERRORS if self.routes.legacy else FALLBACK_ERRORS
         for position, entry in enumerate(chain):
@@ -129,6 +132,17 @@ class ModelRouter:
             if adapter is None:  # only on the unfiltered legacy route (no key): fail exactly as before
                 logger.error("llm.auth_failed entry=%s: provider not configured (missing API key)", entry)
                 raise LLMAuthError(f"Provider '{provider_name}' is not configured (missing API key)")
+            from app.privacy import guard
+
+            prot = await guard.protect(self.session_factory, workflow_id=ctx.workflow_id if ctx else None, team=team,
+                                       agent_type=role, provider=provider_name, model=model_name,
+                                       system_prompt=system_prompt, user_prompt=user_prompt, settings=self.settings)
+            if prot.skip_reason:
+                privacy_skips.append(f"{entry}: {prot.skip_reason}")
+                logger.warning("llm.entry_skipped entry=%s reason=privacy (%s)", entry, prot.skip_reason)
+                await self._privacy_event(ctx, "privacy.secret_blocked" if "SECRET" in prot.skip_reason
+                                          else "privacy.routed_away", entry, prot)
+                continue
             if self.session_factory is not None and not await quota.try_reserve(
                     self.session_factory, entry, self.routes.quotas.get(entry), self.settings):
                 skipped_quota = True  # used up / window exhausted (logged once per window by quota)
@@ -138,7 +152,7 @@ class ModelRouter:
             fallback_from = chain[0] if position > 0 else None
             started = time.perf_counter()
             try:
-                response = await adapter.generate(model_name, system_prompt, user_prompt, output_model,
+                response = await adapter.generate(model_name, prot.system_prompt, prot.user_prompt, output_model,
                                                   use_search=use_search, thinking_level=thinking_level)
             except asyncio.CancelledError:  # task timeout / lease lost / shutdown: release, record, re-raise
                 self.breaker.release(entry)
@@ -175,12 +189,30 @@ class ModelRouter:
             response.route_position, response.fallback_from = position, fallback_from
             if fallback_from:
                 logger.warning("llm.used_fallback entry=%s instead_of=%s role=%s", entry, fallback_from, role)
-            await self._record(ctx, role, provider_name, model_name, "succeeded", None, response.input_tokens,
-                               response.output_tokens, response.cost_usd, response.latency_ms, position,
-                               fallback_from)
+            manifest = self._manifest(role, provider_name, model_name, prot, response, system_prompt,
+                                      thinking_level, use_search, position, fallback_from)
+            call_id = await self._record(ctx, role, provider_name, model_name, "succeeded", None,
+                                         response.input_tokens, response.output_tokens, response.cost_usd,
+                                         response.latency_ms, position, fallback_from, manifest=manifest)
+            if ctx is not None and ctx.workflow_id is not None and self.session_factory is not None:
+                from app.audit import manifest as mf
+
+                mode = self.settings.audit_store_content
+                await mf.store(self.session_factory, ctx.workflow_id, call_id, "prompt",
+                               prot.system_prompt + "\n\n" + prot.user_prompt, mode)
+                await mf.store(self.session_factory, ctx.workflow_id, call_id, "response", response.raw_text or "", mode)
+            if prot.types or privacy_skips:
+                await self._privacy_event(ctx, "privacy.protected", entry, prot,
+                                          skipped=[x.split(": ", 1)[0] for x in privacy_skips])
             await self._budget_after(ctx)
             return response
 
+        if privacy_skips and not errors and not skipped_quota:
+            from app.llm.errors import LLMPrivacyBlockedError
+
+            await self._privacy_event(ctx, "privacy.blocked", chain[0], None, reasons=privacy_skips)
+            raise LLMPrivacyBlockedError("No allowed provider for this prompt: " + "; ".join(privacy_skips)
+                                         + ". Add a local model (Ollama) to this role's route, or change the policy.")
         overloaded = [e for e in errors if isinstance(e, LLMOverloadedError)]
         if overloaded:
             last = overloaded[-1]
@@ -201,14 +233,65 @@ class ModelRouter:
     # ------------------------------------------------------------------ usage + budgets
     async def _record(self, ctx: CallContext | None, role: str | None, provider: str, model: str, outcome: str,
                       error_type: str | None, input_tokens: int, output_tokens: int, cost: float | None,
-                      latency_ms: int | None, position: int, fallback_from: str | None) -> None:
+                      latency_ms: int | None, position: int, fallback_from: str | None,
+                      manifest: dict[str, Any] | None = None) -> int | None:
         if self.session_factory is None:
-            return
+            return None
         async with self.session_factory() as session:
-            session.add(LLMCall(workflow_id=ctx.workflow_id if ctx else None, task_id=ctx.task_id if ctx else None,
-                                role=role, provider=provider, model=model, outcome=outcome, error_type=error_type,
-                                input_tokens=input_tokens, output_tokens=output_tokens, cost_usd=cost,
-                                latency_ms=latency_ms, route_position=position, fallback_from=fallback_from))
+            row = LLMCall(workflow_id=ctx.workflow_id if ctx else None, task_id=ctx.task_id if ctx else None,
+                          role=role, provider=provider, model=model, outcome=outcome, error_type=error_type,
+                          input_tokens=input_tokens, output_tokens=output_tokens, cost_usd=cost,
+                          latency_ms=latency_ms, route_position=position, fallback_from=fallback_from,
+                          manifest=manifest)
+            session.add(row)
+            await session.commit()
+            return row.id
+
+    async def _team(self, ctx: CallContext | None) -> str | None:
+        if self.session_factory is None or ctx is None or ctx.workflow_id is None:
+            return None
+        from app.models.governance import Team
+
+        async with self.session_factory() as session:
+            return await session.scalar(select(Team.name).join(Workflow, Workflow.team_id == Team.id)
+                                        .where(Workflow.id == ctx.workflow_id))
+
+    def _manifest(self, role: str | None, provider: str, model: str, prot: Any, response: LLMResponse,
+                  system_prompt: str, thinking_level: str | None, use_search: bool, position: int,
+                  fallback_from: str | None) -> dict[str, Any]:
+        from app.audit import manifest as mf
+        from app.audit.canonical import sha256_hex
+
+        template = mf.template_of(role)
+        return {"provider": provider, "model": model, "model_version": getattr(response, "model", None),
+                "parameters": {"thinking_level": thinking_level, "use_search": use_search, "temperature": None,
+                               "max_tokens": None},
+                "prompt_template_hash": sha256_hex(template) if template else sha256_hex(system_prompt),
+                "rendered_prompt_hash": sha256_hex(prot.system_prompt + "\n\n" + prot.user_prompt),
+                "response_hash": sha256_hex(response.raw_text or ""),
+                "usage": {"input_tokens": response.input_tokens, "output_tokens": response.output_tokens},
+                "latency_ms": response.latency_ms, "route_position": position, "fallback_from": fallback_from,
+                "pii": {"types": prot.types, "actions": prot.actions, "counts": prot.counts, "rules": prot.rules}}
+
+    async def _privacy_event(self, ctx: CallContext | None, event_type: str, entry: str, prot: Any,
+                             skipped: list[str] | None = None, reasons: list[str] | None = None) -> None:
+        if self.session_factory is None or ctx is None or ctx.workflow_id is None:
+            return
+        from app.core.events import record_event
+        from app.privacy.guard import summary
+
+        if prot is None:
+            payload = {"entry": entry, "reasons": reasons or [], "decision": {"effect": "block"}}
+        else:
+            local = sorted(t for t, m in prot.actions.items() if m == "local_only") if skipped else []
+            payload = {"entry": entry, "types": prot.types, "actions": prot.actions, "counts": prot.counts,
+                       "rules": prot.rules, "skipped_entries": skipped or [],
+                       "summary": summary(prot.counts, local) or ", ".join(prot.types),
+                       "decision": {"effect": "protect" if event_type == "privacy.protected" else "block",
+                                    "matched_rule_ids": prot.rules}}
+        async with self.session_factory() as session:
+            record_event(session, workflow_id=ctx.workflow_id, task_id=ctx.task_id, event_type=event_type,
+                         payload=payload)
             await session.commit()
 
     async def _budget_before(self, ctx: CallContext | None, role: str | None, entry: str, prompt_chars: int,

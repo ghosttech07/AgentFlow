@@ -62,6 +62,9 @@ class When(BaseModel):
     team: str | None = None
     side_effect: Literal["none", "internal_write", "external_read", "external_write"] | None = None
     recipient_not_in_domains: list[str] | None = None
+    # Part 12 decision point llm_call: which PII types were found, where the provider runs
+    pii_types: list[str] | None = None  # matches when ANY of these types is in the prompt
+    provider_locality: Literal["local", "external"] | None = None
 
 
 class Rule(BaseModel):
@@ -72,6 +75,9 @@ class Rule(BaseModel):
     approvals: int | None = Field(default=None, ge=1, le=10)
     approver_role: Literal["viewer", "operator", "approver", "admin"] | None = None
     deny: bool = False
+    # Part 12 llm_call effects: only_local -> skip external providers (block if no local one); per-type modes
+    only_local: bool = False
+    pii_modes: dict[str, Literal["allow", "tokenize", "mask", "local_only", "block"]] | None = None
 
     @model_validator(mode="after")
     def _deny_needs_tool(self) -> Rule:
@@ -84,6 +90,10 @@ class Rule(BaseModel):
     def is_tool_rule(self) -> bool:
         w = self.when
         return bool(w.tool or w.side_effect or w.recipient_not_in_domains is not None)
+
+    @property
+    def is_llm_rule(self) -> bool:
+        return bool(self.when.pii_types or self.when.provider_locality or self.only_local or self.pii_modes)
 
     @field_validator("approver_role")
     @classmethod
@@ -103,10 +113,17 @@ class Requirement:
     approver_role: str | None = None
     deny: bool = False
     rules: list[str] = field(default_factory=list)
+    only_local: bool = False
+    pii_modes: dict[str, str] = field(default_factory=dict)
 
     def merge(self, r: Rule) -> None:
         self.rules.append(r.name)
         self.deny = self.deny or r.deny
+        self.only_local = self.only_local or r.only_local
+        for t, m in (r.pii_modes or {}).items():
+            from app.privacy.guard import stricter
+
+            self.pii_modes[t] = stricter(self.pii_modes.get(t, "allow"), m)
         if r.require_approval or r.approvals or r.approver_role:
             self.require = True
         self.approvals = max(self.approvals, r.approvals or 1)
@@ -133,6 +150,10 @@ class Policies:
             return False
         if w.side_effect and w.side_effect != ctx.get("side_effect"):
             return False
+        if w.pii_types and not set(w.pii_types) & set(ctx.get("pii_types") or []):
+            return False
+        if w.provider_locality and w.provider_locality != ctx.get("provider_locality"):
+            return False
         if w.recipient_not_in_domains is not None:
             allowed = {d.lower() for d in w.recipient_not_in_domains}
             recipients = [str(x) for x in ctx.get("recipients") or []]
@@ -145,7 +166,10 @@ class Policies:
         req = Requirement()
         try:
             for r in self.rules:
-                if scope == "task" and r.is_tool_rule or scope == "tool" and not r.is_tool_rule:
+                if scope == "llm":
+                    if not r.is_llm_rule:
+                        continue
+                elif r.is_llm_rule or scope == "task" and r.is_tool_rule or scope == "tool" and not r.is_tool_rule:
                     continue
                 if self._match(r, ctx):
                     req.merge(r)
@@ -156,7 +180,7 @@ class Policies:
 
     def task_rules(self) -> list[Rule]:
         """Rules that can apply to a whole task (no tool condition)."""
-        return [r for r in self.rules if not r.is_tool_rule]
+        return [r for r in self.rules if not r.is_tool_rule and not r.is_llm_rule]
 
 
 def load_policies(path: str | Path) -> Policies:

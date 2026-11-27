@@ -40,6 +40,7 @@ class Workflow(Base):
     run_requested: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
     # Part 8: {max_cost_usd?, max_tokens?, max_llm_calls?, max_duration_seconds?}; None = config defaults.
     budget: Mapped[dict[str, Any] | None] = mapped_column()
+    repro: Mapped[dict[str, Any] | None] = mapped_column()  # Part 12: code version + config hashes at creation
     # Part 11: owning team (None = global / created before teams existed) and the user who created it.
     team_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("teams.id", ondelete="SET NULL"), index=True)
     created_by: Mapped[str | None] = mapped_column(String(64))

@@ -57,9 +57,9 @@ async def purge_expired(session: AsyncSession = Depends(get_session)) -> dict[st
     """A team admin purges their own team's expired memories; only a global admin purges every team (logged)."""
     p = current()
     prefix = None if p.is_global else access.team_prefix(p.team_id)
-    purged = await memory_service.purge_expired(session, prefix)
-    if prefix is None:
-        import logging
+    from app.audit.chain import enqueue
 
-        logging.getLogger(__name__).warning("memory.global_purge by=%s purged=%d", p.name or p.kind, purged)
+    enqueue(session, action="memory.purged", team_id=p.team_id, object_type="memory",
+            payload={"scope": "all teams" if prefix is None else "team"})
+    purged = await memory_service.purge_expired(session, prefix)
     return {"purged": purged, "scope": "all teams" if prefix is None else "your team"}

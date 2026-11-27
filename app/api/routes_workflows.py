@@ -327,3 +327,13 @@ async def list_workflow_events(
 ) -> list[EventRead]:
     events = await workflow_service.list_events(session, workflow_id)
     return [EventRead.model_validate(e) for e in events]
+
+
+@router.get("/{workflow_id}/manifest", responses=NOT_FOUND)
+async def get_manifest(workflow_id: uuid.UUID, include_content: bool = False,
+                       session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    """Part 12 run manifest: config hashes, per-attempt manifests, per-call hashes; content only with
+    audit.content.view and only if stored (and not crypto-shredded)."""
+    from app.services import trust_service
+
+    return await trust_service.manifest(session, workflow_id, include_content=include_content)

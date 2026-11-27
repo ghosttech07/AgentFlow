@@ -25,6 +25,7 @@ from app.api import (
     routes_agents,
     routes_approvals,
     routes_ask,
+    routes_audit,
     routes_dashboard,
     routes_dev,
     routes_engine,
@@ -38,7 +39,7 @@ from app.api import (
 from app.config import PROJECT_ROOT, get_settings
 from app.core.errors import AppError
 from app.core.logging import request_id_var, setup_logging
-from app.db.session import SessionLocal, engine
+from app.db.session import engine
 from app.engine import Engine
 from app.llm import get_llm_client
 from app.tools.startup import log_tools_config
@@ -107,6 +108,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from app.governance.policy import get_policies
 
     logger.info("policies.loaded rules=%d", len(get_policies().rules))  # Part 11: a bad policies.yaml stops startup
+    try:  # Part 12: prompt registry (content-hashed templates) + an early check of the keys
+        from app.audit.manifest import register_all
+        from app.db.session import SessionLocal
+
+        logger.info("prompts.registered count=%d", await register_all(SessionLocal))
+    except Exception:  # noqa: BLE001 - the DB may be unreachable in some test setups; calls register lazily
+        logger.warning("prompts.register_failed", exc_info=True)
+    from app.privacy.crypto import master_key
+
+    master_key()  # production refuses to start without AUDIT_MASTER_KEY
     app.state.engine = None
     if settings.engine_enabled:
         llm = get_llm_client()
@@ -190,6 +201,7 @@ def create_app() -> FastAPI:
     app.include_router(routes_dashboard.router)
     app.include_router(routes_dev.router)
     app.include_router(routes_admin.router)
+    app.include_router(routes_audit.router)
     # Dashboard assets (self-hosted fonts); the page itself is GET /dashboard.
     app.mount("/static", StaticFiles(directory=PROJECT_ROOT / "app" / "static"), name="static")
     return app

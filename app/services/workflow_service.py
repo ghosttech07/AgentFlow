@@ -143,6 +143,9 @@ async def create_workflow(session: AsyncSession, data: WorkflowCreate) -> Workfl
         budget=data.budget.stored() if data.budget else None,
         team_id=caller.team_id, created_by=caller.name if caller.kind == "user" else None,
     )
+    from app.audit.manifest import repro_snapshot
+
+    workflow.repro = repro_snapshot()  # Part 12: code version + config hashes at creation
     tasks = build_tasks(workflow.id, data.tasks)
     workflow.tasks = tasks
 

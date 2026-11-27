@@ -89,6 +89,15 @@ def require_role(role: str) -> Callable[..., Awaitable[Principal]]:
     return dep
 
 
+# Part 12 permissions -> the minimum role (team admins act on their own team's data only).
+PERMISSIONS = {"audit.view": "admin", "audit.export": "admin", "audit.content.view": "admin",
+               "privacy.erase": "admin", "privacy.reveal": "admin", "privacy.retention": "admin"}
+
+
+def require_permission(name: str) -> Callable[..., Awaitable[Principal]]:
+    return require_role(PERMISSIONS[name])
+
+
 require_viewer = require_role("viewer")
 require_operator = require_role("operator")
 require_approver = require_role("approver")

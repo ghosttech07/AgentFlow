@@ -78,6 +78,11 @@ async def login(session: AsyncSession, name: str, password: str, ip: str | None,
     user = await session.scalar(select(User).where(User.name == name.strip()))
     ok = _verify(user.password_hash if user else None, password)
     if not ok or user is None or not user.active:
+        from app.audit.chain import enqueue
+
+        enqueue(session, action="auth.login_failed", team_id=user.team_id if user else None, object_type="user",
+                payload={"name": name.strip()[:64], "known_user": False},  # never reveal it, even in the audit
+                actor={"actor_type": "user", "actor_id": None, "auth_method": "password", "ip": ip})
         await _fail(session, keys, settings)
         raise UnauthorizedError(GENERIC)
     await session.execute(delete(LoginAttempt).where(LoginAttempt.key.in_(keys)))
@@ -86,6 +91,10 @@ async def login(session: AsyncSession, name: str, password: str, ip: str | None,
     session.add(Session(token_hash=hash_key(token), csrf_hash=hash_key(csrf), user_id=user.id, created_at=now,
                         last_seen_at=now, expires_at=now + timedelta(hours=settings.session_max_hours),
                         ip=(ip or "")[:64] or None))
+    from app.audit.chain import enqueue
+
+    enqueue(session, action="auth.login", team_id=user.team_id, object_type="user", object_id=user.id,
+            actor={"actor_type": "user", "actor_id": user.name, "auth_method": "password", "ip": ip})
     if _hasher.check_needs_rehash(user.password_hash or ""):
         user.password_hash = _hasher.hash(password)
     await session.commit()

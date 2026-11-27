@@ -290,6 +290,20 @@ async def _save(
                 task.metrics = {**(task.metrics or {}), "memories_used": result.memories_used}
                 record_event(session, workflow_id=task.workflow_id, task_id=task.id, event_type=EventType.MEMORY_USED,
                              payload={"task_key": task.key, "memory_ids": result.memories_used})
+            # Part 12: the run manifest of this attempt; its digest goes into the audit chain (tamper-evident).
+            from app.audit.canonical import digest as _digest
+            from app.audit.manifest import build_attempt_manifest
+            from app.models.attempt import TaskAttempt as _Att
+
+            manifest = await build_attempt_manifest(session, task)
+            last = await session.scalar(select(_Att).where(_Att.task_id == task.id)
+                                        .order_by(_Att.attempt_number.desc()).limit(1))
+            if last is not None:
+                last.manifest = manifest
+            record_event(session, workflow_id=task.workflow_id, task_id=task.id,
+                         event_type="task.manifest_recorded",
+                         payload={"task_key": task.key, "attempt": manifest.get("attempt"),
+                                  "manifest_digest": _digest(manifest)})
             from app.models.workflow import Workflow as _Wf
             from app.services import memory_service
 

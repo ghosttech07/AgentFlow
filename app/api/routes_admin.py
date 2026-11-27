@@ -105,6 +105,9 @@ async def create_team(body: TeamCreate, p: Principal = Depends(require_admin_rol
         raise ForbiddenError("Only a global admin can create teams")
     team = Team(name=body.name)
     session.add(team)
+    from app.audit.chain import enqueue
+
+    enqueue(session, action="team.created", object_type="team", payload={"name": body.name})
     try:
         await session.commit()
     except IntegrityError as exc:
@@ -137,6 +140,10 @@ async def create_user(body: UserCreate, p: Principal = Depends(require_admin_rol
     user = User(name=body.name, role=body.role, team_id=team_id, api_key_hash=hash_key(key),
                 password_hash=hash_password(body.password) if body.password else None)
     session.add(user)
+    from app.audit.chain import enqueue
+
+    enqueue(session, action="user.created", team_id=team_id, object_type="user",
+            payload={"name": body.name, "role": body.role, "team": body.team, "password_set": bool(body.password)})
     try:
         await session.commit()
     except IntegrityError as exc:
@@ -168,6 +175,10 @@ async def disable_user(user_id: uuid.UUID, p: Principal = Depends(require_admin_
                        session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
     user = await _managed(session, p, user_id)
     user.active = False
+    from app.audit.chain import enqueue
+
+    enqueue(session, action="user.disabled", team_id=user.team_id, object_type="user", object_id=user.id,
+            payload={"name": user.name})
     await session.commit()
     return _user(user, await _teams(session))
 
@@ -179,5 +190,9 @@ async def rotate_key(user_id: uuid.UUID, p: Principal = Depends(require_admin_ro
     user = await _managed(session, p, user_id)
     key = new_key()
     user.api_key_hash = hash_key(key)
+    from app.audit.chain import enqueue
+
+    enqueue(session, action="token.rotated", team_id=user.team_id, object_type="user", object_id=user.id,
+            payload={"name": user.name})
     await session.commit()
     return {**_user(user, await _teams(session)), "api_key": key}

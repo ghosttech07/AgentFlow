@@ -73,6 +73,13 @@ class LLMPermanentError(LLMError):
     error_type = "permanent"
 
 
+class LLMPrivacyBlockedError(LLMPermanentError):
+    """Part 12: the prompt holds data that may not go to any available provider (e.g. Aadhaar and no local model)."""
+
+    code = "privacy_blocked"
+    error_type = "privacy_blocked"
+
+
 class LLMAuthError(LLMPermanentError):
     """Bad / missing / unauthorised key: a misconfiguration, never routed around silently."""
 

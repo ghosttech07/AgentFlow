@@ -286,12 +286,25 @@ class ToolLoop:
         self._absorb(await self._run(tool, args, call_id, row.idempotency_key or "", row.step_index))
 
     # ------------------------------------------------------------------ one call
+    async def _rehydrate(self, args: BaseModel) -> BaseModel:
+        """Tokenized PII (<EMAIL_1>) in an external write's arguments becomes the real value at execution time only
+        (the journal, the approval card and the model keep the tokens)."""
+        from app.privacy.guard import TOKEN_RE, rehydrate
+
+        data = args.model_dump(mode="json")
+        if not TOKEN_RE.search(str(data)):
+            return args
+        async with self.sf() as s:
+            real = await rehydrate(s, self.rt.workflow_id, data)
+        return type(args).model_validate(real)
+
     async def _run(self, tool: Tool, args: BaseModel, call_id: uuid.UUID, key: str, step_index: int,
                    flags: dict[str, Any] | None = None) -> StepView:
         start = time.monotonic()
         status, result, error = "succeeded", None, None
         is_write = tool.side_effect_for(args) in WRITE_EFFECTS
         try:
+            args = await self._rehydrate(args) if is_write else args  # Part 12: real values only now, after the checks
             out = await asyncio.wait_for(tool.execute(args, self._ctx(tool, key, flags)), timeout=tool.timeout_seconds)
             result = out.model_dump(mode="json")
         except asyncio.CancelledError:

@@ -57,6 +57,9 @@ class Engine:
 
     async def start(self) -> None:
         self._stopping = False
+        from app.audit.jobs import AuditMaintenance
+
+        self._maintenance = AuditMaintenance(self.session_factory, self.settings)  # only for a started engine
         await self.recover()  # before the first tick
         self._loop_task = asyncio.create_task(self._run_loop(), name="agentflow-engine")
         logger.info("engine.started worker_id=%s max_concurrency=%d poll_s=%s",
@@ -148,6 +151,8 @@ class Engine:
                             replan_service.run_job(self.session_factory, self.llm, workflow_id, self.settings))
                 work += 1
 
+        if getattr(self, "_maintenance", None) is not None:  # Part 12: checkpoints, integrity, retention
+            await self._maintenance.run()
         work += await scheduler.reap_expired_leases(self.session_factory, self.settings)
         work += await scheduler.schedule_running_workflows(self.session_factory, self.settings)
 

@@ -55,6 +55,7 @@ class TaskAttempt(Base):
     cost_usd: Mapped[float | None] = mapped_column(Numeric(12, 6, asdecimal=False))  # Part 8; None = unknown
     # Part 9: tool-loop checkpoint (taint, untrusted sources, step counter, pending tool call) for a resume.
     loop_state: Mapped[dict[str, Any] | None] = mapped_column()
+    manifest: Mapped[dict[str, Any] | None] = mapped_column()  # Part 12: input/output hashes + llm call ids
 
 
 class ChaosRule(Base):

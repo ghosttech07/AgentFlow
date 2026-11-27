@@ -149,13 +149,24 @@ async def _superuser(session_factory, sql: str, **params) -> None:  # noqa: ANN0
         await s.commit()
 
 
+@pytest.fixture
+async def restore_unique(session_factory):  # noqa: ANN001, ANN201
+    """Tamper tests drop the (chain_id, seq) constraint like a malicious admin would; put the schema back after."""
+    yield
+    async with session_factory() as s:
+        await s.execute(text("TRUNCATE audit_log, audit_chain_heads, audit_checkpoints"))
+        await s.execute(text("ALTER TABLE audit_log DROP CONSTRAINT IF EXISTS uq_audit_log_chain_seq"))
+        await s.execute(text("ALTER TABLE audit_log ADD CONSTRAINT uq_audit_log_chain_seq UNIQUE (chain_id, seq)"))
+        await s.commit()
+
+
 @pytest.mark.parametrize(("sql", "kind", "seq"), [
     ("UPDATE audit_log SET payload = '{\"i\": 99}' WHERE chain_id = 'system' AND seq = 3", "modified", 3),
     ("DELETE FROM audit_log WHERE chain_id = 'system' AND seq = 4", "deleted", 4),
     ("UPDATE audit_log SET seq = CASE seq WHEN 2 THEN 3 WHEN 3 THEN 2 END WHERE chain_id = 'system' AND seq IN (2, 3)",
      "reordered", 2),
 ])
-async def test_tampering_is_located(session_factory, sql: str, kind: str, seq: int) -> None:  # noqa: ANN001
+async def test_tampering_is_located(session_factory, restore_unique, sql: str, kind: str, seq: int) -> None:  # noqa: ANN001
     await _chain_of(session_factory)
     await _superuser(session_factory, "ALTER TABLE audit_log DROP CONSTRAINT IF EXISTS uq_audit_log_chain_seq")
     await _superuser(session_factory, sql)
@@ -163,7 +174,7 @@ async def test_tampering_is_located(session_factory, sql: str, kind: str, seq: i
     assert (r.ok, r.kind, r.first_broken_seq) == (False, kind, seq), r
 
 
-async def test_an_inserted_record_is_detected(session_factory) -> None:  # noqa: ANN001
+async def test_an_inserted_record_is_detected(session_factory, restore_unique) -> None:  # noqa: ANN001
     await _chain_of(session_factory)
     async with session_factory() as s:
         rows = list(await s.scalars(select(AuditLog).where(AuditLog.chain_id == "system").order_by(AuditLog.seq)))

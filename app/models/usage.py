@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import (
     BigInteger,
@@ -44,6 +45,8 @@ class LLMCall(Base):
     latency_ms: Mapped[int | None] = mapped_column(Integer)
     fallback_from: Mapped[str | None] = mapped_column(String(160))
     route_position: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # Part 12 reproducibility: prompt template/rendered/response hashes, parameters, PII actions
+    manifest: Mapped[dict[str, Any] | None] = mapped_column()
     created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=func.now())
 
 
