@@ -39,7 +39,33 @@ def setup_logging(level: str = "INFO") -> None:
         handler._agentflow = True  # type: ignore[attr-defined]
         root.addHandler(handler)
 
+    install_redaction()
+
     # SQLAlchemy's engine logger is noisy at INFO; only show it when debugging.
     logging.getLogger("sqlalchemy.engine").setLevel(
         logging.INFO if level == "DEBUG" else logging.WARNING
     )
+
+
+_base_factory = logging.getLogRecordFactory()
+
+
+def install_redaction() -> None:
+    """Part 12: every log record (any handler, incl. test capture) has PII and secrets masked at creation."""
+    if getattr(logging.getLogRecordFactory(), "_agentflow_redacting", False):
+        return
+    from app.privacy.redact import mask_text
+
+    def factory(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        record = _base_factory(*args, **kwargs)
+        try:
+            msg = record.getMessage()
+        except Exception:  # noqa: BLE001
+            return record
+        masked = mask_text(msg)
+        if masked != msg:
+            record.msg, record.args = masked, None
+        return record
+
+    factory._agentflow_redacting = True  # type: ignore[attr-defined]
+    logging.setLogRecordFactory(factory)

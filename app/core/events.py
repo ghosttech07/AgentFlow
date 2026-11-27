@@ -89,4 +89,15 @@ def record_event(
         payload=payload or {},
     )
     session.add(event)
+    # Part 12: the same transaction appends a tamper-evident audit record (one function for every event).
+    from app.audit.chain import enqueue
+
+    data = payload or {}
+    decision = None
+    if data.get("policy_rules") or data.get("decision"):
+        decision = data.get("decision") or {"effect": "require_approval", "matched_rule_ids": data.get("policy_rules")}
+    enqueue(session, action=str(event_type), workflow_id=workflow_id,
+            object_type="task" if task_id else "workflow", object_id=task_id or workflow_id,
+            payload={"workflow_id": str(workflow_id), **({"task_id": str(task_id)} if task_id else {}), **data},
+            decision=decision)
     return event

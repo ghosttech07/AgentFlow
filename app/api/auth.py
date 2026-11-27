@@ -68,6 +68,9 @@ async def get_principal(
         p = Principal(kind="open", role="admin")
     else:
         p = Principal(kind="open", role="viewer")  # admin key set, no users: reads stay open (Part 6 behaviour)
+    import dataclasses
+
+    p = dataclasses.replace(p, ip=(request.client.host if request.client else None))
     set_current(p)
     try:
         yield p

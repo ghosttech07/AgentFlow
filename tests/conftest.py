@@ -42,7 +42,8 @@ from app.llm.fake_client import FakeLLMClient
 from app.main import create_app
 
 TEST_DATABASE_URL = get_settings().test_database_url
-TABLES = ("workflow_events", "task_dependencies", "tasks", "workflows", "provider_usage", "asks", "memories", "users", "teams", "login_attempts")  # others cascade
+TABLES = ("workflow_events", "task_dependencies", "tasks", "workflows", "provider_usage", "asks", "memories", "users", "teams", "login_attempts",
+          "audit_log", "audit_chain_heads", "audit_checkpoints")  # others cascade
 
 
 def _alembic_config() -> Config:

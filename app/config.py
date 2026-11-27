@@ -142,6 +142,23 @@ class Settings(BaseSettings):
     sample_data_url: str = "postgresql+asyncpg://agentflow_reader:reader@localhost:5432/agentflow_sample"
     sample_db_reader_password: SecretStr = SecretStr("reader")
 
+    # Trust layer (Part 12)
+    audit_signing_key_path: Path = PROJECT_ROOT / "outputs" / "keys" / "audit_ed25519.pem"  # private, gitignored
+    audit_public_keys_dirs: list[Path] = Field(default_factory=lambda: [PROJECT_ROOT / "docs" / "audit-public-keys",
+                                                                        PROJECT_ROOT / "outputs" / "keys" / "public"])
+    audit_checkpoint_every_records: int = Field(default=100, ge=1)
+    audit_checkpoint_minutes: float = Field(default=15.0, gt=0)
+    audit_verify_minutes: float = Field(default=10.0, gt=0)
+    audit_anchor_dir: Path | None = PROJECT_ROOT / "outputs" / "audit-anchors"  # None = no file export
+    audit_anchor_webhook_url: str | None = None
+    audit_anchor_git_repo: Path | None = None  # a local git repo; each checkpoint is committed there
+    audit_integrity_webhook_url: str | None = None
+    audit_master_key: SecretStr | None = None  # base64 32 bytes; wraps the per-workflow data keys
+    audit_master_key_path: Path = PROJECT_ROOT / "outputs" / "keys" / "master.key"  # dev only (auto-created)
+    audit_store_content: Literal["hash_only", "redacted", "full"] = "redacted"
+    privacy_default_external: str = "AADHAAR=local_only,PAN=local_only,CARD=local_only,SECRET=block,EMAIL=tokenize,PHONE=tokenize"
+    retention_job_hours: float = Field(default=24.0, gt=0)
+
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
 
     @field_validator("gemini_fallback_models", mode="before")
