@@ -76,7 +76,7 @@ CARD = re.compile(r"(?<!\d)(?:\d[ -]?){12,18}\d(?!\d)")
 IFSC = re.compile(r"\b[A-Z]{4}0[A-Z0-9]{6}\b")
 PASSPORT = re.compile(r"\b[A-PR-WY][1-9]\d{6}\b")
 IPV4 = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
-IPV6 = re.compile(r"(?<![:\w])(?:[0-9A-Fa-f]{1,4}:){2,7}[0-9A-Fa-f]{0,4}(?![:\w])")
+IPV6 = re.compile(r"(?<![:\w])(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}(?![:\w])")  # ipaddress validates
 SECRETS: list[tuple[str, re.Pattern[str]]] = [
     ("SECRET", re.compile(r"AIza[0-9A-Za-z_\-]{35}")),
     ("SECRET", re.compile(r"sk-ant-[A-Za-z0-9_\-]{20,}")),

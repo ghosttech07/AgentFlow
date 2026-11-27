@@ -79,19 +79,22 @@ def verify_records(chain_id: str, records: list[dict[str, Any]], checkpoints: li
             if record_hash(r, r["prev_hash"]) == r["hash"]:
                 return fail(r["seq"], "inserted", "a self-consistent record whose prev_hash matches no earlier record")
             return fail(r["seq"], "modified", "prev_hash changed")
-        if record_hash(r, prev) != r["hash"]:
+        # a stub (another workflow's record in an evidence segment) is checked for linkage only; its content stays out
+        if not r.get("stub") and record_hash(r, prev) != r["hash"]:
             return fail(r["seq"], "modified", "the record's content does not match its hash")
         hashes[r["seq"]] = r["hash"]
         prev = r["hash"]
         res.verified_seq = r["seq"]
         expected_seq += 1
     for cp in sorted(checkpoints, key=lambda c: c["seq"]):
-        if cp["seq"] not in hashes:
-            if cp["seq"] > res.verified_seq:
-                return fail(cp["seq"], "deleted", f"checkpoint at seq {cp['seq']} is beyond the last record")
-            continue  # outside this segment
-        if hashes[cp["seq"]] != cp["head_hash"]:
-            return fail(cp["seq"], "checkpoint_mismatch", "the chain's hash at this seq differs from the signed head")
+        if cp["seq"] in hashes:
+            if hashes[cp["seq"]] != cp["head_hash"]:
+                return fail(cp["seq"], "checkpoint_mismatch",
+                            "the chain's hash at this seq differs from the signed head")
+        elif cp["seq"] > res.verified_seq:
+            return fail(cp["seq"], "deleted", f"checkpoint at seq {cp['seq']} is beyond the last record")
+        elif start_prev is not None and records and cp["seq"] == records[0]["seq"] - 1                 and cp["head_hash"] != start_prev:
+            return fail(cp["seq"], "checkpoint_mismatch", "the segment does not start at the signed checkpoint")
         if not verify_sig(cp["key_id"], statement(cp["chain_id"], cp["seq"], cp["head_hash"], _at(cp["at"]),
                                                   cp["key_id"]), cp["signature"], key_dirs):
             return fail(cp["seq"], "bad_signature", f"checkpoint signature invalid for key {cp['key_id']}")

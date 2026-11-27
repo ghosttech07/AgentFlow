@@ -141,6 +141,13 @@ def _before_flush(s: Session, flush_context: Any, instances: Any) -> None:
             _append_one(s, item)
 
 
+@event.listens_for(Session, "before_commit")
+def _before_commit(s: Session) -> None:
+    """A commit with only Core statements (UPDATE/DELETE, no ORM changes) skips before_flush: drain here too."""
+    if s.info.get(PENDING):
+        _drain(s)
+
+
 @event.listens_for(Session, "after_commit")
 @event.listens_for(Session, "after_rollback")
 def _reset(s: Session) -> None:

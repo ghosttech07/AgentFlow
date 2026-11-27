@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.auth import require_admin, require_creator, scoped
+from app.api.auth import require_admin, require_creator, require_permission, scoped
 from app.core.enums import WorkflowStatus
 from app.core.plan_patch import PlanPatch
 from app.db.session import get_session
@@ -337,3 +337,30 @@ async def get_manifest(workflow_id: uuid.UUID, include_content: bool = False,
     from app.services import trust_service
 
     return await trust_service.manifest(session, workflow_id, include_content=include_content)
+
+
+@router.get("/{workflow_id}/evidence", responses=NOT_FOUND)
+async def get_evidence(workflow_id: uuid.UUID, format: str = Query(default="zip", pattern="^(zip|json|pdf)$"),
+                       session: AsyncSession = Depends(get_session),
+                       _: object = Depends(require_permission("audit.export"))) -> Response:
+    """Part 12 compliance evidence (audit.export): zip (signed bundle, verify offline), json, or pdf. Audited."""
+    import json as _json
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from app.audit import evidence
+
+    sf = async_sessionmaker(session.bind, expire_on_commit=False)  # same DB as this request (tests use their own)
+    if format == "zip":
+        data = await evidence.bundle_zip(sf, session, workflow_id)
+        return Response(data, media_type="application/zip",
+                        headers={"Content-Disposition": f'attachment; filename="evidence-{workflow_id}.zip"'})
+    built = await evidence.build(sf, session, workflow_id)
+    from app.audit import chain as audit
+
+    await audit.append_now(session, action="audit.export", workflow_id=workflow_id, object_type="workflow",
+                           object_id=workflow_id, payload={"format": format})
+    await session.commit()
+    if format == "pdf":
+        return Response(evidence._pdf(built["doc"]), media_type="application/pdf")
+    return Response(_json.dumps(built["doc"], default=str, ensure_ascii=False), media_type="application/json")

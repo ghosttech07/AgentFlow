@@ -65,3 +65,10 @@ def check_memory_namespace(namespace: str) -> None:
     p = current()
     if not p.is_global and not namespace.startswith(team_prefix(p.team_id)):
         raise NotFoundError("Memory not found")
+
+
+def check_team(team_id: uuid.UUID | None) -> None:
+    """An object that belongs to a team (not a workflow): another team's answers 404."""
+    p = current()
+    if not p.is_global and team_id != p.team_id:
+        raise NotFoundError("Not found")

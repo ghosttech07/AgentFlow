@@ -32,6 +32,7 @@ from app.api import (
     routes_health,
     routes_memory,
     routes_plans,
+    routes_privacy,
     routes_providers,
     routes_tools,
     routes_workflows,
@@ -202,6 +203,7 @@ def create_app() -> FastAPI:
     app.include_router(routes_dev.router)
     app.include_router(routes_admin.router)
     app.include_router(routes_audit.router)
+    app.include_router(routes_privacy.router)
     # Dashboard assets (self-hosted fonts); the page itself is GET /dashboard.
     app.mount("/static", StaticFiles(directory=PROJECT_ROOT / "app" / "static"), name="static")
     return app
