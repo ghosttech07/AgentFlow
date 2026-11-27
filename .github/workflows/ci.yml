@@ -19,6 +19,9 @@ jobs:
       - uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # The action scans only the pushed commits; this scans every commit (fixtures allowlisted in .gitleaksignore).
+      - name: Full-history scan
+        run: docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.21.2 detect --source /repo --log-opts=--all --redact --no-banner
 
   lint:
     name: Lint (ruff)
